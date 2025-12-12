@@ -119,6 +119,7 @@ from ._src.solvers import (
     SolverSemiImplicit,
     SolverStyle3D,
     SolverVBD,
+    SolverVoxel,
     SolverXPBD,
 )
 
@@ -130,6 +131,7 @@ __all__ = [
     "SolverSemiImplicit",
     "SolverStyle3D",
     "SolverVBD",
+    "SolverVoxel",
     "SolverXPBD",
 ]
 

@@ -13,26 +13,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .featherstone import SolverFeatherstone
-from .flags import SolverNotifyFlags
-from .implicit_mpm import SolverImplicitMPM
-from .mujoco import SolverMuJoCo
-from .semi_implicit import SolverSemiImplicit
-from .solver import SolverBase
-from .style3d import SolverStyle3D
-from .vbd import SolverVBD
-from .xpbd import SolverXPBD
-from .voxel import SolverVoxel
+import warp as wp
 
-__all__ = [
-    "SolverBase",
-    "SolverFeatherstone",
-    "SolverImplicitMPM",
-    "SolverMuJoCo",
-    "SolverNotifyFlags",
-    "SolverSemiImplicit",
-    "SolverStyle3D",
-    "SolverVBD",
-    "SolverXPBD",
-    "SolverVoxel",
-]
+from ...core.types import override
+from ...sim import Contacts, Control, Model, State
+from ..solver import SolverBase
+
+class SolverVoxel(SolverBase):
+
+    def __init__(
+        self,
+        model: Model,
+    ):
+        super().__init__(model=model)
+        print("constructed voxel solver")
+
+    @override
+    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+        print("called step")
+        return state_out
