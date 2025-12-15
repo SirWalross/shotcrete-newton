@@ -480,6 +480,9 @@ class ModelBuilder:
         self.particle_color_groups: list[nparray] = []
         self.particle_world = []  # world index for each particle
 
+        self.voxel_world = []
+        self.voxel_transforms: list[wp.transform] = []
+
         # shapes (each shape has an entry in these arrays)
         self.shape_key = []  # shape keys
         # transform from shape to body
@@ -948,6 +951,13 @@ class ModelBuilder:
         The number of joints in the model.
         """
         return len(self.joint_type)
+
+    @property
+    def voxel_count(self):
+        """
+        The number of voxels in the model.
+        """
+        return len(self.voxel_world)
 
     @property
     def particle_count(self):
@@ -1680,6 +1690,14 @@ class ModelBuilder:
             # Override all world indices with current world
             particle_groups = [self.current_world] * builder.particle_count
             self.particle_world.extend(particle_groups)
+
+        # # For voxels
+        # if builder.voxel_count > 0:
+        #     # Override all world indices with current world
+        #     voxel_groups = [self.current_world] * builder.voxel_count
+        #     voxel_transforms = [xform] * builder.voxel_count
+        #     self.voxel_world.extend(voxel_groups)
+        #     self.voxel_transforms.extend(voxel_transforms)
 
         # For bodies
         if builder.body_count > 0:
@@ -5778,6 +5796,13 @@ class ModelBuilder:
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation
 
+            # voxels
+            # m.voxel_wet = wp.zeros((len(self.voxel_world), 256, 256, 256), dtype=wp.float32)
+            # m.voxel_dry = wp.zeros((len(self.voxel_world), 256, 256, 256), dtype=wp.float32)
+            # m.voxel_distance = wp.zeros((len(self.voxel_world), 256, 256, 256), dtype=wp.float32)
+            # m.voxel_load = wp.zeros((len(self.voxel_world), 256, 256, 256), dtype=wp.float32)
+            # m.voxel_transforms = wp.array(self.voxel_transforms, dtype=wp.transform)
+
             # equality constraints
             m.equality_constraint_type = wp.array(self.equality_constraint_type, dtype=wp.int32)
             m.equality_constraint_body1 = wp.array(self.equality_constraint_body1, dtype=wp.int32)
@@ -5799,6 +5824,7 @@ class ModelBuilder:
             m.joint_dof_count = self.joint_dof_count
             m.joint_coord_count = self.joint_coord_count
             m.particle_count = len(self.particle_q)
+            m.voxel_count = len(self.voxel_world)
             m.body_count = len(self.body_q)
             m.shape_count = len(self.shape_type)
             m.tri_count = len(self.tri_poses)

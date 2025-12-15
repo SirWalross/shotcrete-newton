@@ -163,6 +163,19 @@ class Model:
         self.particle_world = None
         """World index for each particle, shape [particle_count], int. -1 for global."""
 
+        self.voxel_wet = None
+        """Density of wet concrete, shape [voxel_count], float."""
+        self.voxel_dry = None
+        """Density of dry concrete, shape [voxel_count], float."""
+        self.voxel_distance = None
+        """Distance of voxel from float, shape [voxel_count], int32."""
+        self.voxel_load = None
+        """Current load of the voxel, shape [voxel_count], float."""
+        self.voxel_transform = None
+        """Current transform of the voxel, shape [voxel_count], wp.transform."""
+        self.voxel_world = None
+        """World index for each voxel, shape [voxel_count], int. -1 for global."""
+
         self.shape_key = []
         """List of keys for each shape."""
         self.shape_transform = None
@@ -425,6 +438,8 @@ class Model:
 
         self.particle_count = 0
         """Total number of particles in the system."""
+        self.voxel_count = 0
+        """Total number of voxel areas in the system."""
         self.body_count = 0
         """Total number of bodies in the system."""
         self.shape_count = 0
