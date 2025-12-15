@@ -14,21 +14,33 @@
 # limitations under the License.
 
 import warp as wp
+import sys
+import numpy as np
 
 from ...core.types import override
 from ...sim import Contacts, Control, Model, State
 from ..solver import SolverBase
+from ..mujoco import SolverMuJoCo
 
 class SolverVoxel(SolverBase):
-
     def __init__(
         self,
         model: Model,
+        *,
+        mujoco_config,
     ):
         super().__init__(model=model)
-        print("constructed voxel solver")
+        print(f"{mujoco_config=}, {model=}")
+        mujoco_config.pop("solver_type")
+        print(model.num_worlds)
+        print(model.joint_world)
+        print(model.joint_X_p)
+        print(model.articulation_count)
+        print(model.joint_count)
+        print(model.particle_count)
+        print(model.edge_count)
+        self.mujoco = SolverMuJoCo(model, **mujoco_config)
 
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
-        print("called step")
-        return state_out
+        return self.mujoco.step(state_in, state_out, control, contacts, dt)
