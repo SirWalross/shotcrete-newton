@@ -19,7 +19,7 @@ import warnings
 import numpy as np
 import warp as wp
 
-from ..geometry.raycast import raycast_sensor_kernel, raycast_sensor_particles_kernel
+from ..geometry.raycast import raycast_sensor_kernel
 from ..sim import Model, State
 
 
@@ -75,49 +75,51 @@ class RaycastSensor:
     def __init__(
         self,
         model: Model,
-        camera_position: tuple[float, float, float] | np.ndarray,
-        camera_direction: tuple[float, float, float] | np.ndarray,
+        camera_position: np.array,
+        camera_direction: np.array,
         camera_up: tuple[float, float, float] | np.ndarray,
-        fov_radians: float,
+        camera_width: float,
+        camera_height: float,
         width: int,
         height: int,
+        indices: np.array,
         max_distance: float = 1000.0,
     ):
         """Initialize a RaycastSensor.
 
         Args:
             model: The Newton model containing the geometry to raycast against
-            camera_position: 3D position of the camera in world space
+            camera_position: 3D position of the camera in voxel space
             camera_direction: Forward direction of the camera (will be normalized)
             camera_up: Up direction of the camera (will be normalized)
-            fov_radians: Vertical field of view in radians
+            camera_width: Width of camera in voxel space
+            camera_height: Height of camera in voxel space
             width: Image width in pixels
             height: Image height in pixels
             max_distance: Maximum ray distance; rays beyond this return no hit
         """
         self.model = model
         self.device = model.device
+        self.camera_width = camera_width
+        self.camera_height = camera_height
         self.width = width
         self.height = height
-        self.fov_radians = fov_radians
-        self.aspect_ratio = float(width) / float(height)
         self.max_distance = max_distance
 
         # Set initial camera parameters
-        self.camera_position = np.array(camera_position, dtype=np.float32)
-        camera_dir = np.array(camera_direction, dtype=np.float32)
+        self.camera_position = camera_position
         camera_up = np.array(camera_up, dtype=np.float32)
-
-        # Pre-compute field of view scale
-        self.fov_scale = math.tan(fov_radians * 0.5)
+        self._world_indices = wp.array(indices, dtype=wp.int32, device=self.device)
 
         # Create depth image buffer
-        self._depth_buffer = wp.zeros((height, width), dtype=float, device=self.device)
+        self._count = self.camera_position.shape[0]
+        self._depth_buffer = wp.zeros((self._count, height, width), dtype=float, device=self.device)
         self.depth_image = self._depth_buffer
         self._resolution = wp.vec2(float(width), float(height))
+        self._scale = wp.vec2(camera_width, camera_height)
 
         # Compute camera basis vectors and warp vectors
-        self._compute_camera_basis(camera_dir, camera_up)
+        self._compute_camera_basis(camera_direction, camera_up)
 
         # Lazily constructed structure for particle queries
         self._particle_grid: wp.HashGrid | None = None
@@ -131,31 +133,49 @@ class RaycastSensor:
             up: Camera up vector (will be normalized)
         """
         # Normalize direction vectors
-        self.camera_direction = direction / np.linalg.norm(direction)
+        self.camera_direction = direction / np.linalg.norm(direction, axis=1, keepdims=True)
         self.camera_up = up / np.linalg.norm(up)
 
         # Compute right vector as cross product of forward and up
         self.camera_right = np.cross(self.camera_direction, self.camera_up)
-        right_norm = np.linalg.norm(self.camera_right)
-        if right_norm < 1e-8:
-            # Camera direction and up are parallel, use a different up vector
-            if abs(self.camera_direction[2]) < 0.9:
-                temp_up = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-            else:
-                temp_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-            self.camera_right = np.cross(self.camera_direction, temp_up)
-            right_norm = np.linalg.norm(self.camera_right)
-        self.camera_right = self.camera_right / right_norm
+        right_norms = np.linalg.norm(self.camera_right, axis=1, keepdims=True)
+
+        # Slice out the directions that need fixing
+        mask = (right_norms < 1e-8).squeeze()
+        degen_dirs = self.camera_direction[mask]
+
+        # Vectorized version of the "if abs(z) < 0.9" check
+        # We use np.where to select between the two up-vector candidates
+        # condition shape: (M, 1), broadcasted against the candidates shape (3,) -> result (M, 3)
+        use_z_up = np.abs(degen_dirs[:, 2:3]) < 0.9
+
+        up_candidates = np.where(
+            use_z_up,
+            np.array([0.0, 0.0, 1.0], dtype=np.float32),  # True case
+            np.array([0.0, 1.0, 0.0], dtype=np.float32),  # False case
+        )
+
+        # Recalculate cross product for the degenerate subset
+        fixed_rights = np.cross(degen_dirs, up_candidates)
+
+        # Update the original arrays with the fixed values
+        self.camera_right[mask] = fixed_rights
+
+        # Recalculate norms for the fixed vectors so normalization below works
+        right_norms[mask] = np.linalg.norm(fixed_rights, axis=1, keepdims=True)
+
+        # 4. Final normalization
+        # Now safe to divide because we fixed the zero-length vectors
+        self.camera_right = self.camera_right / right_norms
 
         # Recompute up vector to ensure orthogonality
         self.camera_up = np.cross(self.camera_right, self.camera_direction)
-        self.camera_up = self.camera_up / np.linalg.norm(self.camera_up)
+        self.camera_up = self.camera_up / np.linalg.norm(self.camera_up, axis=1, keepdims=True)
 
     def eval(
         self,
         state: State,
-        include_particles: bool = False,
-        particle_march_step: float | None = None,
+        march_step: float | None = None,
     ):
         """Evaluate the raycast sensor to generate a depth image.
 
@@ -166,160 +186,34 @@ class RaycastSensor:
         Args:
             state: The current state of the simulation containing body poses
             include_particles: Whether to test ray intersections against particles present in ``state``
-            particle_march_step: Optional stride used when marching along each ray during particle queries.
-                Defaults to half of the maximum particle radius when particles are available.
+            march_step: Optional stride for the distance in voxels for marching.
         """
-
-        if include_particles and particle_march_step is not None and particle_march_step <= 0.0:
-            raise ValueError("particle_march_step must be positive when provided.")
 
         # Reset depth buffer to maximum distance
         self._depth_buffer.fill_(self.max_distance)
-        num_shapes = len(self.model.shape_body)
-
-        if (include_particles and self._does_state_have_particles(state)) or num_shapes != 0:
-            camera_position = wp.vec3(*self.camera_position)
-            camera_direction = wp.vec3(*self.camera_direction)
-            camera_up = wp.vec3(*self.camera_up)
-            camera_right = wp.vec3(*self.camera_right)
-
-        # Launch raycast kernel for each pixel-shape combination
-        # We use 3D launch with dimensions (width, height, num_shapes)
-        if num_shapes > 0:
-            wp.launch(
-                kernel=raycast_sensor_kernel,
-                dim=(self.width, self.height, num_shapes),
-                inputs=[
-                    # Model data
-                    state.body_q,
-                    self.model.shape_body,
-                    self.model.shape_transform,
-                    self.model.shape_type,
-                    self.model.shape_scale,
-                    self.model.shape_source_ptr,
-                    # Camera parameters
-                    camera_position,
-                    camera_direction,
-                    camera_up,
-                    camera_right,
-                    self.fov_scale,
-                    self.aspect_ratio,
-                    self._resolution,
-                ],
-                outputs=[self._depth_buffer],
-                device=self.device,
-            )
-
-        if include_particles and self._does_state_have_particles(state):
-            self._raycast_particles(
-                state=state,
-                camera_position=camera_position,
-                camera_direction=camera_direction,
-                camera_up=camera_up,
-                camera_right=camera_right,
-                march_step=particle_march_step,
-            )
-
-        # Set pixels that still have max_distance to -1.0 to indicate no hit
-        self._clamp_no_hits()
-
-    def _get_particle_grid(self) -> wp.HashGrid:
-        """Return a hash grid for particle queries, constructing it lazily."""
-        if self._particle_grid is None:
-            with wp.ScopedDevice(self.device):
-                self._particle_grid = wp.HashGrid(128, 128, 128)
-        return self._particle_grid
-
-    def _raycast_particles(
-        self,
-        state: State,
-        camera_position: wp.vec3,
-        camera_direction: wp.vec3,
-        camera_up: wp.vec3,
-        camera_right: wp.vec3,
-        march_step: float | None,
-    ) -> None:
-        """Intersect rays with particles using a spatial hash grid."""
-
-        particle_positions = state.particle_q
-        particle_count = state.particle_count
-        particle_radius = self.model.particle_radius
-        max_radius = float(self.model.particle_max_radius)
-
-        search_radius = max_radius + 1.0e-6
-        step = march_step if march_step is not None else 0.5 * search_radius
-        max_steps, truncated, requested_steps = self._compute_particle_march_steps(step)
-
-        if truncated and not self._particle_step_warning_emitted:
-            requested_msg = "infinite" if not math.isfinite(requested_steps) else f"{requested_steps:,}"
-            max_allowed = min(INT32_MAX, MAX_PARTICLE_RAY_MARCH_STEPS)
-            warnings.warn(
-                f"Particle ray marching limited to {max_allowed:,} steps (requested {requested_msg}). "
-                "Increase particle_march_step or reduce max_distance for full coverage.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            self._particle_step_warning_emitted = True
-
-        grid = self._get_particle_grid()
-        with wp.ScopedDevice(self.device):
-            grid.reserve(particle_count)
-            grid.build(particle_positions, radius=search_radius)
 
         wp.launch(
-            kernel=raycast_sensor_particles_kernel,
-            dim=(self.width, self.height),
+            kernel=raycast_sensor_kernel,
+            dim=(self.width, self.height, self._count),
             inputs=[
-                grid.id,
-                particle_positions,
-                particle_radius,
-                float(search_radius),
-                float(step),
-                int(max_steps),
-                camera_position,
-                camera_direction,
-                camera_up,
-                camera_right,
-                float(self.fov_scale),
-                float(self.aspect_ratio),
+                self.model.voxel_wet,
+                self.model.voxel_dry,
+                self.model.voxel_world,
+                self._world_indices,
+                # Camera parameters
+                wp.array(self.camera_position, dtype=wp.vec3f),
+                wp.array(self.camera_direction, dtype=wp.vec3f),
+                wp.array(self.camera_up, dtype=wp.vec3f),
+                wp.array(self.camera_right, dtype=wp.vec3f),
+                self._scale,
                 self._resolution,
-                float(self.max_distance),
             ],
             outputs=[self._depth_buffer],
             device=self.device,
         )
 
-    def _does_state_have_particles(self, state: State) -> bool:
-        """Check if the given state has particles available for raycasting."""
-        particle_positions = state.particle_q
-        if particle_positions is None or state.particle_count == 0:
-            return False
-
-        if self.model.particle_radius is None or self.model.particle_max_radius <= 0.0:
-            raise ValueError("Model must have valid particle radius to raycast when particles are present.")
-
-        return True
-
-    def _compute_particle_march_steps(self, step: float) -> tuple[int, bool, float]:
-        """Return (steps, truncated, requested_steps) safeguarding loop counters and runtime."""
-
-        if step <= 0.0:
-            raise ValueError("particle march step must be positive.")
-
-        ratio = float(self.max_distance) / float(step)
-        if ratio <= 0.0:
-            return 1, False, 1.0
-
-        max_allowed_steps = min(INT32_MAX, MAX_PARTICLE_RAY_MARCH_STEPS)
-
-        if not math.isfinite(ratio):
-            return max_allowed_steps, True, math.inf
-
-        requested_steps = math.floor(ratio) + 1
-        if requested_steps > max_allowed_steps:
-            return max_allowed_steps, True, requested_steps
-
-        return int(requested_steps), False, int(requested_steps)
+        # Set pixels that still have max_distance to -1.0 to indicate no hit
+        self._clamp_no_hits()
 
     def _clamp_no_hits(self):
         """Replace max_distance values with -1.0 to indicate no intersection."""
@@ -378,7 +272,6 @@ class RaycastSensor:
 
     def update_camera_parameters(
         self,
-        fov_radians: float | None = None,
         width: int | None = None,
         height: int | None = None,
         max_distance: float | None = None,
@@ -400,10 +293,6 @@ class RaycastSensor:
         if height is not None and height != self.height:
             self.height = height
             recreate_buffer = True
-
-        if fov_radians is not None:
-            self.fov_radians = fov_radians
-            self.fov_scale = math.tan(fov_radians * 0.5)
 
         if max_distance is not None:
             self.max_distance = max_distance
