@@ -116,7 +116,10 @@ mujoco = { index = "mujoco" }
 torch = [{ index = "pytorch-cu129", extra = "torch-cu12" }]
 
 [dependency-groups]
-dev = ["asv>=0.6.4"]
+dev = [
+    "asv>=0.6.4",
+    "ruff>=0.14.10",
+]
 
 [tool.ruff]
 cache-dir = ".cache/ruff"

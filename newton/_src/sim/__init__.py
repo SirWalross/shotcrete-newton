@@ -30,6 +30,7 @@ from .joints import (
 from .model import Model, ModelAttributeAssignment, ModelAttributeFrequency
 from .state import State
 from .style3d import Style3DModel, Style3DModelBuilder
+from .voxel_rewards import VoxelRewards
 
 __all__ = [
     "JOINT_LIMIT_UNLIMITED",
@@ -47,6 +48,7 @@ __all__ = [
     "State",
     "Style3DModel",
     "Style3DModelBuilder",
+    "VoxelRewards",
     "color_graph",
     "count_rigid_contact_points",
     "eval_fk",
