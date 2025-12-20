@@ -2319,7 +2319,7 @@ class SolverMuJoCo(SolverBase):
             if hasattr(self, "mjw_data"):
                 wp.launch(
                     kernel=update_model_properties_kernel,
-                    dim=self.mjw_data.nworld,
+                    dim=self.mjw_model.opt.gravity.shape,
                     inputs=[
                         self.model.gravity,
                     ],
