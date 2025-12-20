@@ -23,77 +23,29 @@ def update_distances_kernel(
     positions: wp.array2d(dtype=wp.vec3i),
 ):
     widx, i, j = wp.tid()
-    wp.atomic_min(
-        distances,
-        widx,
-        positions[widx, i, 0] + indices[j, 0],
-        positions[widx, i, 1] + indices[j, 1],
-        positions[widx, i, 2] + indices[j, 2],
-        wp.where(
-            (
-                wet[
-                    widx,
-                    positions[widx, i, 0] + indices[j][0],
-                    positions[widx, i, 1] + indices[j][1],
-                    positions[widx, i, 2] + indices[j][2],
-                ]
-                + dry[
-                    widx,
-                    positions[widx, i, 0] + indices[j][0],
-                    positions[widx, i, 1] + indices[j][1],
-                    positions[widx, i, 2] + indices[j][2],
-                ]
-            )
-            < 0.1,
-            100.0,
-            wp.min(
-                wp.spatial_vector(
-                    distances[
-                        widx,
-                        positions[widx, i, 0] + indices[j][0] + 1,
-                        positions[widx, i, 1] + indices[j][1],
-                        positions[widx, i, 2] + indices[j][2],
-                    ]
-                    + 1.0,
-                    distances[
-                        widx,
-                        positions[widx, i, 0] + indices[j][0] - 1,
-                        positions[widx, i, 1] + indices[j][1],
-                        positions[widx, i, 2] + indices[j][2],
-                    ]
-                    + 1.0,
-                    distances[
-                        widx,
-                        positions[widx, i, 0] + indices[j][0],
-                        positions[widx, i, 1] + indices[j][1] + 1,
-                        positions[widx, i, 2] + indices[j][2],
-                    ]
-                    + 1.0,
-                    distances[
-                        widx,
-                        positions[widx, i, 0] + indices[j][0],
-                        positions[widx, i, 1] + indices[j][1] - 1,
-                        positions[widx, i, 2] + indices[j][2],
-                    ]
-                    + 1.0,
-                    distances[
-                        widx,
-                        positions[widx, i, 0] + indices[j][0],
-                        positions[widx, i, 1] + indices[j][1],
-                        positions[widx, i, 2] + indices[j][2] + 1,
-                    ]
-                    + 5.0,
-                    distances[
-                        widx,
-                        positions[widx, i, 0] + indices[j][0],
-                        positions[widx, i, 1] + indices[j][1],
-                        positions[widx, i, 2] + indices[j][2] - 1,
-                    ]
-                    + 0.1,
-                )
+    pos = positions[widx, i] + indices[j]
+    if valid_pos(pos, wet.shape):
+        wp.atomic_min(
+            distances,
+            widx,
+            pos[0],
+            pos[1],
+            pos[2],
+            wp.where(
+                (wet[widx, pos[0], pos[1], pos[2]] + dry[widx, pos[0], pos[1], pos[2]]) < 0.1,
+                100.0,
+                wp.min(
+                    wp.spatial_vector(
+                        distances[widx, pos[0] + 1, pos[1], pos[2]] + 1.0,
+                        distances[widx, pos[0] - 1, pos[1], pos[2]] + 1.0,
+                        distances[widx, pos[0], pos[1] + 1, pos[2]] + 1.0,
+                        distances[widx, pos[0], pos[1] - 1, pos[2]] + 1.0,
+                        distances[widx, pos[0], pos[1], pos[2] + 1] + 5.0,
+                        distances[widx, pos[0], pos[1], pos[2] - 1] + 0.1,
+                    )
+                ),
             ),
-        ),
-    )
+        )
 
 
 @wp.kernel
@@ -242,19 +194,30 @@ def failure_spread_kernel(
     dry: wp.array4d(dtype=wp.float32),
     current_load: wp.array4d(dtype=wp.float32),
     indices: wp.array(dtype=wp.vec3i),
-    positions: wp.array(dtype=wp.vec3i),
+    positions: wp.array2d(dtype=wp.vec3i),
 ):
     widx, i, j = wp.tid()
     if (
-        wet[widx, positions[i][0] + indices[j][0], positions[i][1] + indices[j][1], positions[i][2] + indices[j][2]]
-        + dry[widx, positions[i][0] + indices[j][0], positions[i][1] + indices[j][1], positions[i][2] + indices[j][2]]
+        wet[
+            widx,
+            positions[widx, i][0] + indices[j][0],
+            positions[widx, i][1] + indices[j][1],
+            positions[widx, i][2] + indices[j][2],
+        ]
+        + dry[
+            widx,
+            positions[widx, i][0] + indices[j][0],
+            positions[widx, i][1] + indices[j][1],
+            positions[widx, i][2] + indices[j][2],
+        ]
     ) > 0.5:
         dist = 2.0 - wp.length(wp.vec3f(indices[j]))
         wp.atomic_sub(
             current_load,
-            positions[i][0] + indices[j][0],
-            positions[i][1] + indices[j][1],
-            positions[i][2] + indices[j][2],
+            widx,
+            positions[widx, i][0] + indices[j][0],
+            positions[widx, i][1] + indices[j][1],
+            positions[widx, i][2] + indices[j][2],
             relu(0.5 * dist),
         )
 
@@ -314,7 +277,7 @@ def drip_kernel(
 def spray_trajectory_kernel(
     wet: wp.array4d(dtype=wp.float32),
     dry: wp.array4d(dtype=wp.float32),
-    transforms: wp.array(dtype=wp.transform),
+    ray_pos: wp.array2d(dtype=wp.vec3i),
     ray_dir: wp.array2d(dtype=wp.vec3),
     velocities: wp.array(dtype=wp.float32),
     linear_spacing: wp.float32,
@@ -324,22 +287,27 @@ def spray_trajectory_kernel(
     widx, i, j = wp.tid()
     t = wp.float32(j + 10) * linear_spacing / velocities[i]
     pos = ray_pos[widx, i] + wp.vec3i(
-        wp.int32(wp.rint(ray_dir[widx, i, 0] * velocities[i] * t / h)),
-        wp.int32(wp.rint(ray_dir[widx, i, 1] * velocities[i] * t / h)),
-        wp.int32(wp.rint((ray_dir[widx, i, 2] * velocities[i] * t - 1.0 / 2.0 * 9.81 * t * t) / h)),
+        wp.int32(wp.rint(ray_dir[widx, i][0] * velocities[i] * t / h)),
+        wp.int32(wp.rint(ray_dir[widx, i][1] * velocities[i] * t / h)),
+        wp.int32(wp.rint((ray_dir[widx, i][2] * velocities[i] * t - 1.0 / 2.0 * 9.81 * t * t) / h)),
     )
-    if (
-        pos[0] < wet.shape[1] - 5
-        and pos[0] >= 5
-        and pos[1] < wet.shape[2] - 5
-        and pos[1] >= 5
-        and pos[2] < wet.shape[3] - 5
-        and pos[2] >= 5
-    ):
+    if valid_pos(pos, wet.shape):
         w = wp.float32(wet[widx, pos[0], pos[1], pos[2]])
         d = wp.float32(dry[widx, pos[0], pos[1], pos[2]])
         if (w + d) > 0.5:
             wp.atomic_max(ray_index, widx, i, SPRAY_COUNT - j - 10)
+
+
+@wp.func
+def valid_pos(pos: wp.vec3i, shape: wp._src.types.shape_t) -> bool:
+    return (
+        pos[0] < shape[1] - 5
+        and pos[0] >= 5
+        and pos[1] < shape[2] - 5
+        and pos[1] >= 5
+        and pos[2] < shape[3] - 5
+        and pos[2] >= 5
+    )
 
 
 @wp.kernel
@@ -365,19 +333,20 @@ def respreading_kernel(
     widx, i, j = wp.tid()
     if wp.float32(ray_index[widx, i] - j) > (wp.float32(average_index[widx]) / wp.float32(k) + 5.0):
         t = wp.float32(SPRAY_COUNT - ray_index[widx, i] + j) * linear_spacing / velocities[i]
-        pos = ray_pos[i] + wp.vec3i(
-            wp.int32(wp.rint(ray_dir[widx, i, 0] * velocities[i] * t / h)),
-            wp.int32(wp.rint(ray_dir[widx, i, 1] * velocities[i] * t / h)),
-            wp.int32(wp.rint((ray_dir[widx, i, 2] * velocities[i] * t - 1.0 / 2.0 * 9.81 * t * t) / h)),
+        pos = ray_pos[widx, i] + wp.vec3i(
+            wp.int32(wp.rint(ray_dir[widx, i][0] * velocities[i] * t / h)),
+            wp.int32(wp.rint(ray_dir[widx, i][1] * velocities[i] * t / h)),
+            wp.int32(wp.rint((ray_dir[widx, i][2] * velocities[i] * t - 1.0 / 2.0 * 9.81 * t * t) / h)),
         )
-        w = (
-            wp.atomic_exch(wet, widx, pos[0], pos[1], pos[2], 0.0)
-            + wp.atomic_exch(wet, widx, pos[0] + 1, pos[1], pos[2], 0.0)
-            + wp.atomic_exch(wet, widx, pos[0] - 1, pos[1], pos[2], 0.0)
-            + wp.atomic_exch(wet, widx, pos[0], pos[1], pos[2] + 1, 0.0)
-            + wp.atomic_exch(wet, widx, pos[0], pos[1], pos[2] - 1, 0.0)
-        )
-        wp.atomic_add(droplet_mass, widx, i, w)
+        if valid_pos(pos, wet.shape):
+            w = (
+                wp.atomic_exch(wet, widx, pos[0], pos[1], pos[2], 0.0)
+                + wp.atomic_exch(wet, widx, pos[0] + 1, pos[1], pos[2], 0.0)
+                + wp.atomic_exch(wet, widx, pos[0] - 1, pos[1], pos[2], 0.0)
+                + wp.atomic_exch(wet, widx, pos[0], pos[1], pos[2] + 1, 0.0)
+                + wp.atomic_exch(wet, widx, pos[0], pos[1], pos[2] - 1, 0.0)
+            )
+            wp.atomic_add(droplet_mass, widx, i, w)
 
 
 @wp.kernel
@@ -396,64 +365,65 @@ def spray_rebound_kernel(
     directions: wp.array2d(dtype=wp.vec3f),
 ):
     widx, i = wp.tid()
-    n = wp.normalize(
-        wp.vec3f(
-            wp.float32(
-                (
-                    wet[widx, ray_hit_pos[i][0] - 1, ray_hit_pos[i][1], ray_hit_pos[i][2]]
-                    + dry[widx, ray_hit_pos[i][0] - 1, ray_hit_pos[i][1], ray_hit_pos[i][2]]
+    if valid_pos(ray_hit_pos[widx, i], wet.shape):
+        n = wp.normalize(
+            wp.vec3f(
+                wp.float32(
+                    (
+                        wet[widx, ray_hit_pos[widx, i][0] - 1, ray_hit_pos[widx, i][1], ray_hit_pos[widx, i][2]]
+                        + dry[widx, ray_hit_pos[widx, i][0] - 1, ray_hit_pos[widx, i][1], ray_hit_pos[widx, i][2]]
+                    )
+                    > 0.5
                 )
-                > 0.5
+                - wp.float32(
+                    (
+                        wet[widx, ray_hit_pos[widx, i][0] + 1, ray_hit_pos[widx, i][1], ray_hit_pos[widx, i][2]]
+                        + dry[widx, ray_hit_pos[widx, i][0] + 1, ray_hit_pos[widx, i][1], ray_hit_pos[widx, i][2]]
+                    )
+                    > 0.5
+                ),
+                wp.float32(
+                    (
+                        wet[widx, ray_hit_pos[widx, i][0], ray_hit_pos[widx, i][1] - 1, ray_hit_pos[widx, i][2]]
+                        + dry[widx, ray_hit_pos[widx, i][0], ray_hit_pos[widx, i][1] - 1, ray_hit_pos[widx, i][2]]
+                    )
+                    > 0.5
+                )
+                - wp.float32(
+                    (
+                        wet[widx, ray_hit_pos[widx, i][0], ray_hit_pos[widx, i][1] + 1, ray_hit_pos[widx, i][2]]
+                        + dry[widx, ray_hit_pos[widx, i][0], ray_hit_pos[widx, i][1] + 1, ray_hit_pos[widx, i][2]]
+                    )
+                    > 0.5
+                ),
+                wp.float32(
+                    (
+                        wet[widx, ray_hit_pos[widx, i][0], ray_hit_pos[widx, i][1], ray_hit_pos[widx, i][2] - 1]
+                        + dry[widx, ray_hit_pos[widx, i][0], ray_hit_pos[widx, i][1], ray_hit_pos[widx, i][2] - 1]
+                    )
+                    > 0.5
+                )
+                - wp.float32(
+                    (
+                        wet[widx, ray_hit_pos[widx, i][0], ray_hit_pos[widx, i][1], ray_hit_pos[widx, i][2] + 1]
+                        + dry[widx, ray_hit_pos[widx, i][0], ray_hit_pos[widx, i][1], ray_hit_pos[widx, i][2] + 1]
+                    )
+                    > 0.5
+                )
+                + 1e-4,
             )
-            - wp.float32(
-                (
-                    wet[widx, ray_hit_pos[i][0] + 1, ray_hit_pos[i][1], ray_hit_pos[i][2]]
-                    + dry[widx, ray_hit_pos[i][0] + 1, ray_hit_pos[i][1], ray_hit_pos[i][2]]
-                )
-                > 0.5
-            ),
-            wp.float32(
-                (
-                    wet[widx, ray_hit_pos[i][0], ray_hit_pos[i][1] - 1, ray_hit_pos[i][2]]
-                    + dry[widx, ray_hit_pos[i][0], ray_hit_pos[i][1] - 1, ray_hit_pos[i][2]]
-                )
-                > 0.5
-            )
-            - wp.float32(
-                (
-                    wet[widx, ray_hit_pos[i][0], ray_hit_pos[i][1] + 1, ray_hit_pos[i][2]]
-                    + dry[widx, ray_hit_pos[i][0], ray_hit_pos[i][1] + 1, ray_hit_pos[i][2]]
-                )
-                > 0.5
-            ),
-            wp.float32(
-                (
-                    wet[widx, ray_hit_pos[i][0], ray_hit_pos[i][1], ray_hit_pos[i][2] - 1]
-                    + dry[widx, ray_hit_pos[i][0], ray_hit_pos[i][1], ray_hit_pos[i][2] - 1]
-                )
-                > 0.5
-            )
-            - wp.float32(
-                (
-                    wet[widx, ray_hit_pos[i][0], ray_hit_pos[i][1], ray_hit_pos[i][2] + 1]
-                    + dry[widx, ray_hit_pos[i][0], ray_hit_pos[i][1], ray_hit_pos[i][2] + 1]
-                )
-                > 0.5
-            )
-            + 1e-4,
         )
-    )
-    t = wp.float32(SPRAY_COUNT - ray_index[widx, i]) * linear_spacing / velocities[i]
-    v = wp.normalize(ray_dir[widx, i] * velocities[i] + wp.vec3f(0.0, 0.0, -9.81) * t)
+        t = wp.float32(SPRAY_COUNT - ray_index[widx, i]) * linear_spacing / velocities[i]
+        v = wp.normalize(ray_dir[widx, i] * velocities[i] + wp.vec3f(0.0, 0.0, -9.81) * t)
 
-    # calculate spraying factors that influence rebound
-    angle = wp.acos(-wp.dot(v, n))
-    distance = wp.length(wp.vec3f(ray_hit_pos[widx, i]) - wp.vec3f(ray_pos[widx, i])) * h
+        # calculate spraying factors that influence rebound
+        angle = wp.acos(-wp.dot(v, n))
+        distance = wp.length(wp.vec3f(ray_hit_pos[widx, i]) - wp.vec3f(ray_pos[widx, i])) * h + 1.2
 
-    # calculate rebound rate
-    rate = wp.min(0.1 + 0.8 * wp.abs(wp.sin(angle)) + 0.5 * (1.2 - distance) * (1.2 - distance), 1.0)
-    rebound_amount[widx, i] = rate * droplet_mass
-    directions[widx, i] = v - 2.0 * wp.dot(v, n) * n
+        # calculate rebound rate
+        rate = wp.min(0.1 + 0.8 * wp.abs(wp.sin(angle)) + 0.5 * (1.2 - distance) * (1.2 - distance), 1.0)
+        rebound_amount[widx, i] = rate * droplet_mass
+        directions[widx, i] = v - 2.0 * wp.dot(v, n) * n
 
 
 @wp.kernel
@@ -468,17 +438,17 @@ def spray_backtrack_kernel(
 ):
     widx, i, j = wp.tid()
     t = wp.float32(SPRAY_COUNT - ray_index[widx, i] - j) * linear_spacing / velocities[i]
-    pos = ray_pos[i] + wp.vec3i(
-        wp.int32(wp.rint(ray_dir[widx, i, 0] * velocities[i] * t / h)),
-        wp.int32(wp.rint(ray_dir[widx, i, 1] * velocities[i] * t / h)),
-        wp.int32(wp.rint((ray_dir[widx, i, 2] * velocities[i] * t - 1.0 / 2.0 * 9.81 * t * t) / h)),
+    pos = ray_pos[widx, i] + wp.vec3i(
+        wp.int32(wp.rint(ray_dir[widx, i][0] * velocities[i] * t / h)),
+        wp.int32(wp.rint(ray_dir[widx, i][1] * velocities[i] * t / h)),
+        wp.int32(wp.rint((ray_dir[widx, i][2] * velocities[i] * t - 1.0 / 2.0 * 9.81 * t * t) / h)),
     )
     ray_trajectory[widx, i, j] = pos
 
 
 @wp.kernel
 def spray_overlap_kernel(
-    voxels: wp.array2d(dtype=wp.vec3i), overlap: wp.array2d(dtype=wp.float32), overlap_distance: wp.float32, k: wp.int32
+    voxels: wp.array2d(dtype=wp.vec3i), overlap_distance: wp.float32, k: wp.int32, overlap: wp.array2d(dtype=wp.float32)
 ):
     widx, i = wp.tid()
     value = wp.float32(-1.0)
@@ -504,15 +474,16 @@ def spray_redistribution_kernel(
     voxels: wp.array2d(dtype=wp.vec3i),
     overlap: wp.array2d(dtype=wp.float32),
     mass: wp.array2d(dtype=wp.float32),
-    direction: wp.array(dtype=wp.vec3f),
+    transforms: wp.array(dtype=wp.transform),
     overlap_distance: wp.float32,
     anisotropic_distance_weight: wp.float32,
 ):
     widx, i, j, _ = wp.tid()
+    direction = wp.transform_vector(transforms[widx], wp.vec3f(1.0, 0.0, 0.0))
     dist = anisotropic_distance(
         wp.vec3f(voxels[widx, i]), wp.vec3f(voxels[widx, j]), direction, anisotropic_distance_weight
     )
-    ij_overlap = relu((wp.float32(overlap_distance // 4) - dist) / wp.float32(overlap_distance // 4))
+    ij_overlap = relu(((overlap_distance / 4.0) - dist) / (overlap_distance / 4.0))
     if overlap[widx, j] > overlap[widx, i]:
         # move mass from partner
         m = mass[widx, j] * (overlap[widx, j] - overlap[widx, i]) / overlap[widx, j] * 0.4 * ij_overlap
@@ -532,26 +503,27 @@ def spray_neighbours_kernel(
 ):
     widx, i, j = wp.tid()
     pos = wp.vec3i(
-        voxels[widx, i, 0] + ball_indices[j, 0],
-        voxels[widx, i, 1] + ball_indices[j, 1],
-        voxels[widx, i, 2] + ball_indices[j, 2],
+        voxels[widx, i][0] + ball_indices[j][0],
+        voxels[widx, i][1] + ball_indices[j][1],
+        voxels[widx, i][2] + ball_indices[j][2],
     )
-    w = wp.float32(wet[widx, pos[0], pos[1], pos[2]])
-    d = wp.float32(dry[widx, pos[0], pos[1], pos[2]])
-    spray_neighbours[widx, i, j] = wp.float32(
-        relu(1.0 - w - d)
-        * wp.float32(
-            ((dry[widx, pos[0] + 1, pos[1], pos[2]] + wet[widx, pos[0] + 1, pos[1], pos[2]]) > 0.5)
-            or ((dry[widx, pos[0] - 1, pos[1], pos[2]] + wet[widx, pos[0] - 1, pos[1], pos[2]]) > 0.5)
-            or ((dry[widx, pos[0], pos[1] + 1, pos[2]] + wet[widx, pos[0], pos[1] + 1, pos[2]]) > 0.5)
-            or ((dry[widx, pos[0], pos[1] - 1, pos[2]] + wet[widx, pos[0], pos[1] - 1, pos[2]]) > 0.5)
-            or ((dry[widx, pos[0], pos[1], pos[2] + 1] + wet[widx, pos[0], pos[1], pos[2] + 1]) > 0.5)
-            or ((dry[widx, pos[0], pos[1], pos[2] - 1] + wet[widx, pos[0], pos[1], pos[2] - 1]) > 0.5)
-            or (w + d) > 0.5
+    if valid_pos(pos, wet.shape):
+        w = wp.float32(wet[widx, pos[0], pos[1], pos[2]])
+        d = wp.float32(dry[widx, pos[0], pos[1], pos[2]])
+        spray_neighbours[widx, i, j] = wp.float32(
+            relu(1.0 - w - d)
+            * wp.float32(
+                ((dry[widx, pos[0] + 1, pos[1], pos[2]] + wet[widx, pos[0] + 1, pos[1], pos[2]]) > 0.5)
+                or ((dry[widx, pos[0] - 1, pos[1], pos[2]] + wet[widx, pos[0] - 1, pos[1], pos[2]]) > 0.5)
+                or ((dry[widx, pos[0], pos[1] + 1, pos[2]] + wet[widx, pos[0], pos[1] + 1, pos[2]]) > 0.5)
+                or ((dry[widx, pos[0], pos[1] - 1, pos[2]] + wet[widx, pos[0], pos[1] - 1, pos[2]]) > 0.5)
+                or ((dry[widx, pos[0], pos[1], pos[2] + 1] + wet[widx, pos[0], pos[1], pos[2] + 1]) > 0.5)
+                or ((dry[widx, pos[0], pos[1], pos[2] - 1] + wet[widx, pos[0], pos[1], pos[2] - 1]) > 0.5)
+                or (w + d) > 0.5
+            )
         )
-    )
-    wp.atomic_add(density, widx, i, spray_neighbours[widx, i, j])
-    wp.atomic_add(neighbour_count, widx, i, wp.float32(spray_neighbours[widx, i, j] != 0.0))
+        wp.atomic_add(density, widx, i, spray_neighbours[widx, i, j])
+        wp.atomic_add(neighbour_count, widx, i, wp.float32(spray_neighbours[widx, i, j] != 0.0))
 
 
 @wp.kernel
@@ -566,36 +538,17 @@ def spray_distribution_kernel(
 ):
     widx, i, j = wp.tid()
 
-    w = wp.float32(
-        wet[
-            widx,
-            voxels[widx, i, 0] + ball_indices[j, 0],
-            voxels[widx, i, 1] + ball_indices[j, 1],
-            voxels[widx, i, 2] + ball_indices[j, 2],
-        ]
-    )
-    d = wp.float32(
-        dry[
-            widx,
-            voxels[widx, i, 0] + ball_indices[j, 0],
-            voxels[widx, i, 1] + ball_indices[j, 1],
-            voxels[widx, i, 2] + ball_indices[j, 2],
-        ]
-    )
-    diff = wp.min(
-        (relu(remaining_mass[widx, i]) / (neighbour_count[widx, i] + 1.0))
-        * wp.float32(spray_neighbours[widx, i, j] != 0.0),
-        relu(1.0 - w - d),
-    )
-    wp.atomic_add(
-        wet,
-        widx,
-        voxels[widx, i, 0] + ball_indices[j, 0],
-        voxels[widx, i, 1] + ball_indices[j, 1],
-        voxels[widx, i, 2] + ball_indices[j, 2],
-        diff,
-    )
-    wp.atomic_sub(remaining_mass, widx, i, diff)
+    pos = voxels[widx, i] + ball_indices[j]
+    if valid_pos(pos, wet.shape):
+        w = wp.float32(wet[widx, pos[0], pos[1], pos[2]])
+        d = wp.float32(dry[widx, pos[0], pos[1], pos[2]])
+        diff = wp.min(
+            (relu(remaining_mass[widx, i]) / (neighbour_count[widx, i] + 1.0))
+            * wp.float32(spray_neighbours[widx, i, j] != 0.0),
+            relu(1.0 - w - d),
+        )
+        wp.atomic_add(wet, widx, pos[0], pos[1], pos[2], diff)
+        wp.atomic_sub(remaining_mass, widx, i, diff)
 
 
 @wp.kernel
@@ -627,11 +580,14 @@ def vector_in_cone(z: wp.float32, phi: wp.float32, direction: wp.vec3f) -> wp.ve
 @wp.kernel
 def update_directions_kernel(
     nozzle_angle: wp.float32,
-    transforms: wp.array(dtype=wp.transform),
+    ee_transforms: wp.array(dtype=wp.transform),
+    voxel_transforms: wp.array(dtype=wp.transform),
     droplet_mass: wp.float32,
     seed: wp.int32,
     k: wp.int32,
-    positions: wp.array2d(dtype=wp.vec3f),
+    h: wp.float32,
+    width: wp.int32,
+    positions: wp.array2d(dtype=wp.vec3i),
     directions: wp.array2d(dtype=wp.vec3f),
     mass: wp.array2d(dtype=wp.float32),
 ):
@@ -639,8 +595,10 @@ def update_directions_kernel(
     z = 1.0 - (1.0 - wp.cos(nozzle_angle)) * (wp.float32(i) + 0.5) / wp.float32(k)
     state = wp.rand_init(seed)
     phi = wp.float32(i) * wp.pi * (3.0 - wp.sqrt(5.0)) + wp.randf(state, 0.0, wp.pi * 2.0)
-    positions[widx, i] = wp.transform_get_translation(transforms[widx])
-    directions[widx, i] = vector_in_cone(z, phi, wp.transform_vector(transforms[widx], wp.vec3f(1.0, 0.0, 0.0)))
+    positions[widx, i] = wp.vec3i(
+        (wp.transform_get_translation(ee_transforms[widx]) - wp.transform_get_translation(voxel_transforms[widx])) / h
+    ) + wp.vec3i(width // 2, 0, 0)
+    directions[widx, i] = vector_in_cone(z, phi, wp.transform_vector(ee_transforms[widx], wp.vec3f(1.0, 0.0, 0.0)))
     mass[widx, i] = mass_ratio(wp.acos(z) / nozzle_angle) * droplet_mass
 
 
@@ -665,14 +623,12 @@ def spray_reward(
 ):
     widx, i, k = wp.tid()
     hit = wp.bool(False)
-    i_round = (i // 16) * 16
-    k_round = (k // 16) * 16
     for j in range(wet.shape[2]):
-        w = wet[widx, i, j, k]
-        d = dry[widx, i, j, k]
+        w = wet[widx, i + 1, j, k + 1]
+        d = dry[widx, i + 1, j, k + 1]
         if not hit and (w + d) > 0.5:
-            wp.atomic_add(height, widx, i_round, k_round, wp.float32(j))
-            wp.atomic_add(height_sq, widx, i_round, k_round, wp.float32(j) * wp.float32(j))
+            wp.atomic_add(height, widx, i // 16, k // 16, wp.float32(j))
+            wp.atomic_add(height_sq, widx, i // 16, k // 16, wp.float32(j) * wp.float32(j))
             hit = True
         if hit:
-            wp.atomic_add(air_gap, widx, i_round, k_round, relu(1.0 - w - d))
+            wp.atomic_add(air_gap, widx, i // 16, k // 16, relu(1.0 - w - d))
