@@ -85,7 +85,7 @@ class SolverVoxel(SolverBase):
         h: float = 0.005,
         tc: float = 50.0,
         k: int = 300,
-        droplet_mass: float = 1.0 / 2.0,
+        droplet_mass: float = 1.0 / 6.0,
         spray_velocity: float = 20.0,
         sigma: float = 1.0,
         drip_vel: int = 5,
@@ -93,7 +93,7 @@ class SolverVoxel(SolverBase):
         respreading_backtracking_amount: int = 25,
         rebound_opening_angle: float = 0.7,
         nozzle_opening_angle: float = 0.157,
-        overlap_distance: int = 50,
+        overlap_distance: float = 50.0,
         anisotropic_distance_weight: float = 2.8,
         shear_strength: float = 50.0,
         adhesion_strength: float = 20.0,
@@ -126,7 +126,7 @@ class SolverVoxel(SolverBase):
         self.wet_strength_penalty = wet_strength_penalty
 
         self.ball_indices = wp.array(get_sphere_indices(s // 2), dtype=wp.vec3i)
-        self.positions = wp.zeros((self.shape[0], self.k), dtype=wp.vec3)
+        self.positions = wp.zeros((self.shape[0], self.k), dtype=wp.vec3i)
         self.directions = wp.zeros((self.shape[0], self.k), dtype=wp.vec3)
         self.droplet_mass = wp.zeros((self.shape[0], self.k), dtype=wp.float32)
         self.ray_trajectory = wp.zeros((self.shape[0], self.k, self.backtrack_count), dtype=wp.vec3i)
@@ -154,8 +154,9 @@ class SolverVoxel(SolverBase):
     def step(
         self, state_in: State, state_out: State, control: Control, contacts: Contacts, rewards: VoxelRewards, dt: float
     ):
+        s = self.mujoco.step(state_in, state_out, control, contacts, dt)
         with wp.ScopedTimer("spraying", active=self.active, synchronize=self.synchronize):
-            self.deposit(wp.clone(state_in.body_q[self.ee_body_indices]))
+            self.deposit(wp.clone(s.body_q[self.ee_body_indices]), self.model.voxel_transform)
         if self.i % 10 == 0:
             with wp.ScopedTimer("adhesion check", active=self.active, synchronize=self.synchronize):
                 self.adhesion_check(rewards)
@@ -171,14 +172,13 @@ class SolverVoxel(SolverBase):
                     )
         self.update_rewards(rewards)
         self.i += 1
-
-        return self.mujoco.step(state_in, state_out, control, contacts, dt)
+        return s
 
     def update_rewards(self, rewards: VoxelRewards):
         with wp.ScopedTimer("rewards", active=self.active, synchronize=self.synchronize):
             wp.launch(
                 spray_reward,
-                dim=(self.shape[0], self.shape[1], self.shape[3]),
+                dim=(self.shape[0], self.shape[1] - 2, self.shape[3] - 2),
                 inputs=[self.model.voxel_wet, self.model.voxel_dry],
                 outputs=[rewards.distance, rewards.smoothness, rewards.air_gap],
             )
@@ -346,12 +346,21 @@ class SolverVoxel(SolverBase):
                     ],
                 )
 
-    def deposit(self, transforms: wp.array(dtype=wp.vec3f)):
+    def deposit(self, ee_transforms: wp.array(dtype=wp.vec3f), voxel_transforms: wp.array(dtype=wp.vec3f)):
         with wp.ScopedTimer("alloca", active=self.active, synchronize=self.synchronize):
             wp.launch(
                 update_directions_kernel,
                 dim=(self.shape[0], self.k),
-                inputs=[self.nozzle_opening_angle, transforms, self.total_droplet_mass],
+                inputs=[
+                    self.nozzle_opening_angle,
+                    ee_transforms,
+                    voxel_transforms,
+                    self.total_droplet_mass,
+                    self.i,
+                    self.k,
+                    self.h,
+                    self.shape[1],
+                ],
                 outputs=[self.positions, self.directions, self.droplet_mass],
             )
         ray_indices = wp.zeros((self.shape[0], self.k), dtype=wp.int32)
@@ -366,6 +375,7 @@ class SolverVoxel(SolverBase):
                     self.directions,
                     self.speed_distribution,
                     LINEAR_SPACING,
+                    self.h
                 ],
                 outputs=[ray_indices],
             )
@@ -384,13 +394,15 @@ class SolverVoxel(SolverBase):
                     LINEAR_SPACING,
                     avg_ray_index,
                     self.droplet_mass,
+                    self.h,
+                    self.k
                 ],
                 outputs=[],
             )
             wp.launch(
                 spray_backtrack_kernel,
                 dim=(self.shape[0], self.k, self.backtrack_count),
-                inputs=[self.positions, self.directions, self.speed_distribution, LINEAR_SPACING, ray_indices],
+                inputs=[self.positions, self.directions, self.speed_distribution, LINEAR_SPACING, ray_indices, self.h],
                 outputs=[self.ray_trajectory],
             )
         with wp.ScopedTimer("spray rebound", active=self.active, synchronize=self.synchronize):
@@ -410,6 +422,7 @@ class SolverVoxel(SolverBase):
                     self.speed_distribution,
                     self.total_droplet_mass,
                     LINEAR_SPACING,
+                    self.h
                 ],
                 outputs=[rebound_droplet_mass, rebound_directions],
             )
@@ -428,6 +441,7 @@ class SolverVoxel(SolverBase):
                     rebound_directions,
                     self.rebound_speed_distribution,
                     LINEAR_SPACING / 5.0,
+                    self.h
                 ],
                 outputs=[ray_indices],
             )
@@ -440,6 +454,7 @@ class SolverVoxel(SolverBase):
                     self.rebound_speed_distribution,
                     LINEAR_SPACING / 5.0,
                     ray_indices,
+                    self.h
                 ],
                 outputs=[self.ray_rebound_trajectory],
             )
@@ -449,7 +464,7 @@ class SolverVoxel(SolverBase):
                 wp.launch(
                     spray_overlap_kernel,
                     dim=(self.shape[0], self.k, self.k - 1),
-                    inputs=[self.ray_trajectory[:, :, 0]],
+                    inputs=[self.ray_trajectory[:, :, 0], self.overlap_distance, self.k],
                     outputs=[spray_overlap],
                 )
             with wp.ScopedTimer("spray redistribution loop", active=self.active, synchronize=self.synchronize):
@@ -457,7 +472,7 @@ class SolverVoxel(SolverBase):
                     wp.launch(
                         spray_redistribution_kernel,
                         dim=(self.shape[0], self.k, self.k),
-                        inputs=[self.ray_trajectory[:, :, 0], spray_overlap, self.droplet_mass, self.positions],
+                        inputs=[self.ray_trajectory[:, :, 0], spray_overlap, self.droplet_mass, ee_transforms, self.overlap_distance, self.anisotropic_distance_weight],
                     )
         with wp.ScopedTimer("spray deposit", active=self.active, synchronize=self.synchronize):
             for k in range(self.backtrack_count):
@@ -494,14 +509,8 @@ class SolverVoxel(SolverBase):
             self.update_distances()
         with wp.ScopedTimer("spray backtrack deposit", active=self.active, synchronize=self.synchronize):
             spray_neighbours = wp.zeros((self.shape[0], self.k, self.ball_indices.shape[0]), dtype=wp.float32)
-            density = wp.zeros(
-                (self.shape[0], self.k),
-                dtype=wp.float32,
-            )
-            neighbour_count = wp.zeros(
-                (self.shape[0], self.k),
-                dtype=wp.float32,
-            )
+            density = wp.zeros((self.shape[0], self.k), dtype=wp.float32)
+            neighbour_count = wp.zeros((self.shape[0], self.k), dtype=wp.float32)
             wp.launch(
                 spray_neighbours_kernel,
                 dim=spray_neighbours.shape,
