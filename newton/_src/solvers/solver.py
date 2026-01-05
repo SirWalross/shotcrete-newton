@@ -16,7 +16,7 @@
 import warp as wp
 
 from ..geometry import ParticleFlags
-from ..sim import Contacts, Control, Model, ModelBuilder, State
+from ..sim import Contacts, Control, Model, ModelBuilder, State, VoxelRewards
 
 
 @wp.kernel
@@ -249,7 +249,7 @@ class SolverBase:
                 device=model.device,
             )
 
-    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, rewards: VoxelRewards, dt: float):
         """
         Simulate the model for a given time step using the given control input.
 
@@ -260,6 +260,7 @@ class SolverBase:
                 Defaults to `None` which means the control values from the
                 :class:`Model` are used.
             contacts (Contacts): The contact information.
+            rewards (VoxelRewards): The calculated rewards.
             dt (float): The time step (typically in seconds).
         """
         raise NotImplementedError()

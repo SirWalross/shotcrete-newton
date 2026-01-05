@@ -156,7 +156,7 @@ class SolverVoxel(SolverBase):
     def step(
         self, state_in: State, state_out: State, control: Control, contacts: Contacts, rewards: VoxelRewards, dt: float
     ):
-        s = self.mujoco.step(state_in, state_out, control, contacts, dt)
+        s = self.mujoco.step(state_in, state_out, control, contacts, None, dt)
         with wp.ScopedTimer("spraying", active=self.active, synchronize=self.synchronize):
             self.deposit(wp.clone(s.body_q[self.ee_body_indices]), self.model.voxel_pos)
         if self.i % 10 == 0:

@@ -35,6 +35,7 @@ from ...sim import (
     ModelAttributeFrequency,
     ModelBuilder,
     State,
+    VoxelRewards,
     color_graph,
     plot_graph,
 )
@@ -464,7 +465,7 @@ class SolverMuJoCo(SolverBase):
 
     @event_scope
     @override
-    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, rewards: VoxelRewards, dt: float):
         if self.use_mujoco_cpu:
             self.apply_mjc_control(self.model, state_in, control, self.mj_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
