@@ -171,8 +171,8 @@ class Model:
         """Distance of voxel from float, shape [voxel_count], int32."""
         self.voxel_load = None
         """Current load of the voxel, shape [voxel_count], float."""
-        self.voxel_transform = None
-        """Current transform of the voxel, shape [voxel_count], wp.transform."""
+        self.voxel_pos = None
+        """Current transform of the voxel, shape [voxel_count], wp.vec3."""
         self.voxel_world = None
         """World index for each voxel, shape [voxel_count], int. -1 for global."""
 

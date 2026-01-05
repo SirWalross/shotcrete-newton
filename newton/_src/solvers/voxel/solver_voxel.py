@@ -156,7 +156,7 @@ class SolverVoxel(SolverBase):
     ):
         s = self.mujoco.step(state_in, state_out, control, contacts, dt)
         with wp.ScopedTimer("spraying", active=self.active, synchronize=self.synchronize):
-            self.deposit(wp.clone(s.body_q[self.ee_body_indices]), self.model.voxel_transform)
+            self.deposit(wp.clone(s.body_q[self.ee_body_indices]), self.model.voxel_pos)
         if self.i % 10 == 0:
             with wp.ScopedTimer("adhesion check", active=self.active, synchronize=self.synchronize):
                 self.adhesion_check(rewards)
@@ -179,7 +179,7 @@ class SolverVoxel(SolverBase):
             wp.launch(
                 spray_reward,
                 dim=(self.shape[0], self.shape[1] - 2, self.shape[3] - 2),
-                inputs=[self.model.voxel_wet, self.model.voxel_dry],
+                inputs=[self.model.voxel_wet, self.model.voxel_dry, self.h],
                 outputs=[rewards.distance, rewards.smoothness, rewards.air_gap],
             )
 
@@ -346,7 +346,7 @@ class SolverVoxel(SolverBase):
                     ],
                 )
 
-    def deposit(self, ee_transforms: wp.array(dtype=wp.vec3f), voxel_transforms: wp.array(dtype=wp.vec3f)):
+    def deposit(self, ee_transforms: wp.array(dtype=wp.vec3f), voxel_pos: wp.array(dtype=wp.vec3f)):
         with wp.ScopedTimer("alloca", active=self.active, synchronize=self.synchronize):
             wp.launch(
                 update_directions_kernel,
@@ -354,7 +354,7 @@ class SolverVoxel(SolverBase):
                 inputs=[
                     self.nozzle_opening_angle,
                     ee_transforms,
-                    voxel_transforms,
+                    voxel_pos,
                     self.total_droplet_mass,
                     self.i,
                     self.k,
@@ -375,7 +375,7 @@ class SolverVoxel(SolverBase):
                     self.directions,
                     self.speed_distribution,
                     LINEAR_SPACING,
-                    self.h
+                    self.h,
                 ],
                 outputs=[ray_indices],
             )
@@ -395,7 +395,7 @@ class SolverVoxel(SolverBase):
                     avg_ray_index,
                     self.droplet_mass,
                     self.h,
-                    self.k
+                    self.k,
                 ],
                 outputs=[],
             )
@@ -422,7 +422,7 @@ class SolverVoxel(SolverBase):
                     self.speed_distribution,
                     self.total_droplet_mass,
                     LINEAR_SPACING,
-                    self.h
+                    self.h,
                 ],
                 outputs=[rebound_droplet_mass, rebound_directions],
             )
@@ -441,7 +441,7 @@ class SolverVoxel(SolverBase):
                     rebound_directions,
                     self.rebound_speed_distribution,
                     LINEAR_SPACING / 5.0,
-                    self.h
+                    self.h,
                 ],
                 outputs=[ray_indices],
             )
@@ -454,7 +454,7 @@ class SolverVoxel(SolverBase):
                     self.rebound_speed_distribution,
                     LINEAR_SPACING / 5.0,
                     ray_indices,
-                    self.h
+                    self.h,
                 ],
                 outputs=[self.ray_rebound_trajectory],
             )
@@ -472,7 +472,14 @@ class SolverVoxel(SolverBase):
                     wp.launch(
                         spray_redistribution_kernel,
                         dim=(self.shape[0], self.k, self.k),
-                        inputs=[self.ray_trajectory[:, :, 0], spray_overlap, self.droplet_mass, ee_transforms, self.overlap_distance, self.anisotropic_distance_weight],
+                        inputs=[
+                            self.ray_trajectory[:, :, 0],
+                            spray_overlap,
+                            self.droplet_mass,
+                            ee_transforms,
+                            self.overlap_distance,
+                            self.anisotropic_distance_weight,
+                        ],
                     )
         with wp.ScopedTimer("spray deposit", active=self.active, synchronize=self.synchronize):
             for k in range(self.backtrack_count):

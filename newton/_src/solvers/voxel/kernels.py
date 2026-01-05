@@ -581,7 +581,7 @@ def vector_in_cone(z: wp.float32, phi: wp.float32, direction: wp.vec3f) -> wp.ve
 def update_directions_kernel(
     nozzle_angle: wp.float32,
     ee_transforms: wp.array(dtype=wp.transform),
-    voxel_transforms: wp.array(dtype=wp.transform),
+    voxel_pos: wp.array(dtype=wp.vec3f),
     droplet_mass: wp.float32,
     seed: wp.int32,
     k: wp.int32,
@@ -596,7 +596,7 @@ def update_directions_kernel(
     state = wp.rand_init(seed)
     phi = wp.float32(i) * wp.pi * (3.0 - wp.sqrt(5.0)) + wp.randf(state, 0.0, wp.pi * 2.0)
     positions[widx, i] = wp.vec3i(
-        (wp.transform_get_translation(ee_transforms[widx]) - wp.transform_get_translation(voxel_transforms[widx])) / h
+        (wp.transform_get_translation(ee_transforms[widx]) - voxel_pos[widx]) / h
     ) + wp.vec3i(width // 2, 0, 0)
     directions[widx, i] = vector_in_cone(z, phi, wp.transform_vector(ee_transforms[widx], wp.vec3f(1.0, 0.0, 0.0)))
     mass[widx, i] = mass_ratio(wp.acos(z) / nozzle_angle) * droplet_mass
@@ -617,6 +617,7 @@ def mass_ratio(r: wp.float32):
 def spray_reward(
     wet: wp.array4d(dtype=wp.float32),
     dry: wp.array4d(dtype=wp.float32),
+    h: wp.float32,
     height: wp.array3d(dtype=wp.float32),
     height_sq: wp.array3d(dtype=wp.float32),
     air_gap: wp.array3d(dtype=wp.float32),
@@ -627,8 +628,8 @@ def spray_reward(
         w = wet[widx, i + 1, j, k + 1]
         d = dry[widx, i + 1, j, k + 1]
         if not hit and (w + d) > 0.5:
-            wp.atomic_add(height, widx, i // 16, k // 16, wp.float32(j))
-            wp.atomic_add(height_sq, widx, i // 16, k // 16, wp.float32(j) * wp.float32(j))
+            wp.atomic_add(height, widx, i // 16, k // 16, wp.float32(j) * h)
+            wp.atomic_add(height_sq, widx, i // 16, k // 16, wp.float32(j) * h * wp.float32(j) * h)
             hit = True
         if hit:
             wp.atomic_add(air_gap, widx, i // 16, k // 16, relu(1.0 - w - d))
