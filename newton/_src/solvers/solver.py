@@ -264,6 +264,17 @@ class SolverBase:
         """
         raise NotImplementedError()
 
+    def reset(self, state_out: State, world_mask: wp.array | None = None):
+        """
+        Reset the model.
+
+        Args:
+            state_out (State): The reset output state.
+            world_mask (wp.array | None): A mask to only reset certain worlds.
+                Defaults to `None` which resets all worlds.
+        """
+        raise NotImplementedError()
+
     def notify_model_changed(self, flags: int):
         """Notify the solver that parts of the :class:`~newton.Model` were modified.
 

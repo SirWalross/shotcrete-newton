@@ -595,9 +595,9 @@ def update_directions_kernel(
     z = 1.0 - (1.0 - wp.cos(nozzle_angle)) * (wp.float32(i) + 0.5) / wp.float32(k)
     state = wp.rand_init(seed)
     phi = wp.float32(i) * wp.pi * (3.0 - wp.sqrt(5.0)) + wp.randf(state, 0.0, wp.pi * 2.0)
-    positions[widx, i] = wp.vec3i(
-        (wp.transform_get_translation(ee_transforms[widx]) - voxel_pos[widx]) / h
-    ) + wp.vec3i(width // 2, 0, 0)
+    positions[widx, i] = wp.vec3i((wp.transform_get_translation(ee_transforms[widx]) - voxel_pos[widx]) / h) + wp.vec3i(
+        width // 2, 0, 0
+    )
     directions[widx, i] = vector_in_cone(z, phi, wp.transform_vector(ee_transforms[widx], wp.vec3f(1.0, 0.0, 0.0)))
     mass[widx, i] = mass_ratio(wp.acos(z) / nozzle_angle) * droplet_mass
 
@@ -614,7 +614,7 @@ def mass_ratio(r: wp.float32):
 
 
 @wp.kernel
-def spray_reward(
+def spray_reward_kernel(
     wet: wp.array4d(dtype=wp.float32),
     dry: wp.array4d(dtype=wp.float32),
     h: wp.float32,
@@ -633,3 +633,26 @@ def spray_reward(
             hit = True
         if hit:
             wp.atomic_add(air_gap, widx, i // 16, k // 16, relu(1.0 - w - d))
+
+
+@wp.kernel
+def reset_worlds_kernel(
+    wet: wp.array4d(dtype=wp.float32),
+    dry: wp.array4d(dtype=wp.float32),
+    distance: wp.array4d(dtype=wp.float32),
+    load: wp.array4d(dtype=wp.float32),
+    mask: wp.array(dtype=wp.bool),
+):
+    widx, i, j, k = wp.tid()
+    if mask[widx]:
+        wet[widx, i, j, k] = 0.0
+        if k < 7:
+            dry[widx, i, j, k] = 10.0
+            distance[widx, i, j, k] = 0.0
+        elif j > wet.shape[2] - 8:
+            dry[widx, i, j, k] = 10.0
+            distance[widx, i, j, k] = 0.0
+        else:
+            dry[widx, i, j, k] = 0.0
+            distance[widx, i, j, k] = 1e6
+        load[widx, i, j, k] = 0.0

@@ -168,7 +168,7 @@ class Model:
         self.voxel_dry = None
         """Density of dry concrete, shape [voxel_count], float."""
         self.voxel_distance = None
-        """Distance of voxel from float, shape [voxel_count], int32."""
+        """Distance of voxel from float, shape [voxel_count], float."""
         self.voxel_load = None
         """Current load of the voxel, shape [voxel_count], float."""
         self.voxel_pos = None

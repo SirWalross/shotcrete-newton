@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import sys
+from typing import Sequence
 
 import numpy as np
 import warp as wp
@@ -34,6 +35,7 @@ from .kernels import (
     failure_spread_kernel,
     initialize_load_kernel,
     randomize_directions_kernel,
+    reset_worlds_kernel,
     respreading_kernel,
     solidify_kernel,
     spray_backtrack_kernel,
@@ -42,7 +44,7 @@ from .kernels import (
     spray_overlap_kernel,
     spray_rebound_kernel,
     spray_redistribution_kernel,
-    spray_reward,
+    spray_reward_kernel,
     spray_trajectory_kernel,
     sum_kernel,
     update_directions_kernel,
@@ -174,10 +176,21 @@ class SolverVoxel(SolverBase):
         self.i += 1
         return s
 
+    @override
+    def reset(self, state_out: State, world_mask: wp.array | None = None):
+        if world_mask is None:
+            world_mask = wp.ones((self.shape[0],), dtype=wp.bool)
+        with wp.ScopedTimer("reset", active=self.active, synchronize=self.synchronize):
+            wp.launch(
+                reset_worlds_kernel,
+                dim=(self.shape[0], self.shape[1], self.shape[2], self.shape[3]),
+                inputs=[self.model.voxel_wet, self.model.voxel_dry, self.model.voxel_distance, self.model.voxel_load, world_mask],
+            )
+
     def update_rewards(self, rewards: VoxelRewards):
         with wp.ScopedTimer("rewards", active=self.active, synchronize=self.synchronize):
             wp.launch(
-                spray_reward,
+                spray_reward_kernel,
                 dim=(self.shape[0], self.shape[1] - 2, self.shape[3] - 2),
                 inputs=[self.model.voxel_wet, self.model.voxel_dry, self.h],
                 outputs=[rewards.distance, rewards.smoothness, rewards.air_gap],
