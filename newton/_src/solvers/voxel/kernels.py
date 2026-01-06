@@ -197,29 +197,18 @@ def failure_spread_kernel(
     positions: wp.array2d(dtype=wp.vec3i),
 ):
     widx, i, j = wp.tid()
-    if (
-        wet[
-            widx,
-            positions[widx, i][0] + indices[j][0],
-            positions[widx, i][1] + indices[j][1],
-            positions[widx, i][2] + indices[j][2],
-        ]
-        + dry[
-            widx,
-            positions[widx, i][0] + indices[j][0],
-            positions[widx, i][1] + indices[j][1],
-            positions[widx, i][2] + indices[j][2],
-        ]
-    ) > 0.5:
-        dist = 2.0 - wp.length(wp.vec3f(indices[j]))
-        wp.atomic_sub(
-            current_load,
-            widx,
-            positions[widx, i][0] + indices[j][0],
-            positions[widx, i][1] + indices[j][1],
-            positions[widx, i][2] + indices[j][2],
-            relu(0.5 * dist),
-        )
+    pos = positions[widx, i] + indices[j]
+    if valid_pos(pos, wet.shape):
+        if (wet[widx, pos[0], pos[1], pos[2]] + dry[widx, pos[0], pos[1], pos[2]]) > 0.5:
+            dist = 2.0 - wp.length(wp.vec3f(indices[j]))
+            wp.atomic_sub(
+                current_load,
+                widx,
+                positions[widx, i][0] + indices[j][0],
+                positions[widx, i][1] + indices[j][1],
+                positions[widx, i][2] + indices[j][2],
+                relu(0.5 * dist),
+            )
 
 
 @wp.func
@@ -646,10 +635,10 @@ def reset_worlds_kernel(
     widx, i, j, k = wp.tid()
     if mask[widx]:
         wet[widx, i, j, k] = 0.0
-        if k < 7:
+        if k == 0:
             dry[widx, i, j, k] = 10.0
             distance[widx, i, j, k] = 0.0
-        elif j > wet.shape[2] - 8:
+        elif j == wet.shape[2] - 1:
             dry[widx, i, j, k] = 10.0
             distance[widx, i, j, k] = 0.0
         else:
