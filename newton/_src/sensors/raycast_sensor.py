@@ -83,6 +83,7 @@ class RaycastSensor:
         width: int,
         height: int,
         indices: np.array,
+        h: float = 0.005,
         max_distance: float = 1000.0,
     ):
         """Initialize a RaycastSensor.
@@ -105,6 +106,7 @@ class RaycastSensor:
         self.width = width
         self.height = height
         self.max_distance = max_distance
+        self.h = h
 
         # Set initial camera parameters
         self.camera_position = camera_position
@@ -207,6 +209,7 @@ class RaycastSensor:
                 wp.array(self.camera_right, dtype=wp.vec3f),
                 self._scale,
                 self._resolution,
+                self.h
             ],
             outputs=[self._depth_buffer],
             device=self.device,

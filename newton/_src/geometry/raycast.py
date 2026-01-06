@@ -76,20 +76,21 @@ def raycast_sensor_kernel(
     voxel_world_idx: wp.array(dtype=wp.int32),
     world_indices: wp.array(dtype=wp.int32),
     # Camera parameters
-    camera_position: wp.vec3,
-    camera_direction: wp.vec3,
-    camera_up: wp.vec3,
-    camera_right: wp.vec3,
+    camera_position: wp.array(dtype=wp.vec3),
+    camera_direction: wp.array(dtype=wp.vec3),
+    camera_up: wp.array(dtype=wp.vec3),
+    camera_right: wp.array(dtype=wp.vec3),
     scale: wp.vec2,
     resolution: wp.vec2,
+    h: wp.float32,
     # Output (per-pixel results)
-    hit_distances: wp.array2d(dtype=float),
+    hit_distances: wp.array3d(dtype=float),
 ):
     pixel_x, pixel_y, voxel_idx = wp.tid()
-    idx = world_indices[voxel_idx]
+    widx = world_indices[voxel_idx]
 
     # check if the world index of the voxel and the sensor are equal
-    if voxel_world_idx[voxel_idx] != idx:
+    if voxel_world_idx[voxel_idx] != widx:
         return
 
     # Skip if out of bounds
@@ -98,10 +99,10 @@ def raycast_sensor_kernel(
 
     # Generate ray for this pixel
     ray_origin, ray_direction = ray_for_pixel(
-        camera_position,
-        camera_direction,
-        camera_up,
-        camera_right,
+        camera_position[widx],
+        camera_direction[widx],
+        camera_up[widx],
+        camera_right[widx],
         scale,
         resolution,
         pixel_x,
@@ -116,11 +117,11 @@ def raycast_sensor_kernel(
             wp.int32(wp.rint(ray_origin[1] + wp.float32(i) * ray_direction[1])),
             wp.int32(wp.rint(ray_origin[2] + wp.float32(i) * ray_direction[2])),
         )
-        if pos[0] < 256 and pos[0] >= 0 and pos[1] < 256 and pos[1] >= 0 and pos[2] < 256 and pos[2] >= 0:
-            w = wp.float32(wet[idx, pos[0], pos[1], pos[2]])
-            d = wp.float32(dry[idx, pos[0], pos[1], pos[2]])
+        if pos[0] < wet.shape[1] and pos[0] >= 0 and pos[1] < wet.shape[2] and pos[1] >= 0 and pos[2] < wet.shape[3] and pos[2] >= 0:
+            w = wp.float32(wet[widx, pos[0], pos[1], pos[2]])
+            d = wp.float32(dry[widx, pos[0], pos[1], pos[2]])
             if (w + d) > 0.5:
                 t = i
                 break
 
-    hit_distances[idx, pixel_x, pixel_y] = t
+    hit_distances[widx, pixel_x, pixel_y] = wp.float32(t) * h
