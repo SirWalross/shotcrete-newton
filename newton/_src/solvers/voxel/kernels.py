@@ -272,6 +272,16 @@ def drip_kernel(
 
 
 @wp.kernel
+def out_of_bounds_spray_kernel(
+    wet: wp.array4d(dtype=wp.float32),
+    ray_trajectory: wp.array3d(dtype=wp.vec3i),
+    out_of_bounds_spray: wp.array(dtype=wp.float32)
+):
+    widx, i = wp.tid()
+    wp.atomic_add(out_of_bounds_spray, widx, wp.float32(not valid_pos(ray_trajectory[widx, i, 0], wet.shape)))
+
+
+@wp.kernel
 def spray_trajectory_kernel(
     wet: wp.array4d(dtype=wp.float32),
     dry: wp.array4d(dtype=wp.float32),

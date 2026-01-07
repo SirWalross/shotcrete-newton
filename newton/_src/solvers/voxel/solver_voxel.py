@@ -34,6 +34,7 @@ from .kernels import (
     drop_down_kernel,
     failure_spread_kernel,
     initialize_load_kernel,
+    out_of_bounds_spray_kernel,
     randomize_directions_kernel,
     respreading_kernel,
     set_floor_kernel,
@@ -161,11 +162,13 @@ class SolverVoxel(SolverBase):
         self, state_in: State, state_out: State, control: Control, contacts: Contacts, rewards: VoxelRewards, dt: float
     ):
         s = self.mujoco.step(state_in, state_out, control, contacts, None, dt)
-        wp.launch(update_cond_kernel, dim=1, inputs=[self.i, self.drip_vel], outputs=[self.drip_cond, self.adhesion_cond])
+        wp.launch(
+            update_cond_kernel, dim=1, inputs=[self.i, self.drip_vel], outputs=[self.drip_cond, self.adhesion_cond]
+        )
         with wp.ScopedTimer("spraying", active=self.active, synchronize=self.synchronize):
             self.deposit(wp.clone(s.body_q[self.ee_body_indices]), self.model.voxel_pos)
         with wp.ScopedTimer("adhesion check", active=self.active, synchronize=self.synchronize):
-            wp.capture_if(self.adhesion_cond, on_true=lambda:self.adhesion_check(rewards))
+            wp.capture_if(self.adhesion_cond, on_true=lambda: self.adhesion_check(rewards))
         with wp.ScopedTimer("solidify", active=self.active, synchronize=self.synchronize):
             wp.launch(solidify_kernel, dim=self.shape, inputs=[self.model.voxel_wet, self.model.voxel_dry, self.tc])
         with wp.ScopedTimer("drip", active=self.active, synchronize=self.synchronize):
@@ -198,7 +201,6 @@ class SolverVoxel(SolverBase):
             ],
         )
 
-
     def update_rewards(self, rewards: VoxelRewards):
         with wp.ScopedTimer("rewards", active=self.active, synchronize=self.synchronize):
             wp.launch(
@@ -206,6 +208,12 @@ class SolverVoxel(SolverBase):
                 dim=(self.shape[0], self.shape[1] - 2, self.shape[3] - 2),
                 inputs=[self.model.voxel_wet, self.model.voxel_dry, self.h],
                 outputs=[rewards.distance, rewards.smoothness, rewards.air_gap],
+            )
+            wp.launch(
+                out_of_bounds_spray_kernel,
+                dim=(self.shape[0], self.k),
+                inputs=[self.model.voxel_wet, self.ray_trajectory],
+                outputs=[rewards.out_of_bounds_spray],
             )
 
     def drip(self):
@@ -341,7 +349,6 @@ class SolverVoxel(SolverBase):
                 ],
             )
         with wp.ScopedTimer("drop down", active=self.active, synchronize=self.synchronize):
-            rewards.adhesion_failure_amount.zero_()
             wp.launch(
                 drop_down_kernel,
                 dim=(self.shape[0], self.shape[1], self.shape[2]),
