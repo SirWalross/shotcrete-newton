@@ -35,8 +35,9 @@ from .kernels import (
     failure_spread_kernel,
     initialize_load_kernel,
     randomize_directions_kernel,
-    reset_worlds_kernel,
     respreading_kernel,
+    set_floor_kernel,
+    set_wall_kernel,
     solidify_kernel,
     spray_backtrack_kernel,
     spray_distribution_kernel,
@@ -173,15 +174,30 @@ class SolverVoxel(SolverBase):
         return s
 
     @override
-    def reset(self, state_out: State, world_mask: wp.array | None = None):
-        if world_mask is None:
-            world_mask = wp.ones((self.shape[0],), dtype=wp.bool)
-        with wp.ScopedTimer("reset", active=self.active, synchronize=self.synchronize):
-            wp.launch(
-                reset_worlds_kernel,
-                dim=(self.shape[0], self.shape[1], self.shape[2], self.shape[3]),
-                inputs=[self.model.voxel_wet, self.model.voxel_dry, self.model.voxel_distance, self.model.voxel_load, world_mask],
-            )
+    def reset(self, state_out: State, world_indices: wp.array(dtype=int)):
+        self.model.voxel_wet[world_indices].fill_(0.0)
+        self.model.voxel_dry[world_indices].fill_(0.0)
+        self.model.voxel_distance[world_indices].fill_(1e6)
+        self.model.voxel_load[world_indices].fill_(0.0)
+        wp.launch(
+            set_floor_kernel,
+            dim=(world_indices.shape[0], self.shape[1], self.shape[2]),
+            inputs=[
+                self.model.voxel_dry,
+                self.model.voxel_distance,
+                world_indices,
+            ],
+        )
+        wp.launch(
+            set_wall_kernel,
+            dim=(world_indices.shape[0], self.shape[1], self.shape[3]),
+            inputs=[
+                self.model.voxel_dry,
+                self.model.voxel_distance,
+                world_indices,
+            ],
+        )
+
 
     def update_rewards(self, rewards: VoxelRewards):
         with wp.ScopedTimer("rewards", active=self.active, synchronize=self.synchronize):

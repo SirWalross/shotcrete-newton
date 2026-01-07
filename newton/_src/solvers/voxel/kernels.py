@@ -2,6 +2,7 @@ import warp as wp
 
 SPRAY_COUNT = 1000
 
+
 @wp.kernel
 def update_cond_kernel(
     i: wp.array(dtype=int), drip_vel: int, adhesion_check: wp.array(dtype=int), drip: wp.array(dtype=int)
@@ -9,6 +10,7 @@ def update_cond_kernel(
     adhesion_check[0] = wp.int32(i[0] % 10 == 0)
     drip[0] = wp.int32(i[0] % drip_vel == 0)
     i[0] = i[0] + 1
+
 
 @wp.kernel
 def solidify_kernel(wet: wp.array4d(dtype=wp.float32), dry: wp.array4d(dtype=wp.float32), tc: wp.float32):
@@ -632,23 +634,22 @@ def spray_reward_kernel(
 
 
 @wp.kernel
-def reset_worlds_kernel(
-    wet: wp.array4d(dtype=wp.float32),
+def set_floor_kernel(
     dry: wp.array4d(dtype=wp.float32),
     distance: wp.array4d(dtype=wp.float32),
-    load: wp.array4d(dtype=wp.float32),
-    mask: wp.array(dtype=wp.bool),
+    indices: wp.array(dtype=wp.int32),
 ):
-    widx, i, j, k = wp.tid()
-    if mask[widx]:
-        wet[widx, i, j, k] = 0.0
-        if k == 0:
-            dry[widx, i, j, k] = 10.0
-            distance[widx, i, j, k] = 0.0
-        elif j == wet.shape[2] - 1:
-            dry[widx, i, j, k] = 10.0
-            distance[widx, i, j, k] = 0.0
-        else:
-            dry[widx, i, j, k] = 0.0
-            distance[widx, i, j, k] = 1e6
-        load[widx, i, j, k] = 0.0
+    widx, i, j = wp.tid()
+    dry[indices[widx], i, j, 0] = 10.0
+    distance[indices[widx], i, j, 0] = 0.0
+
+
+@wp.kernel
+def set_wall_kernel(
+    dry: wp.array4d(dtype=wp.float32),
+    distance: wp.array4d(dtype=wp.float32),
+    indices: wp.array(dtype=wp.int32),
+):
+    widx, i, j = wp.tid()
+    dry[indices[widx], i, dry.shape[2] - 1, j] = 10.0
+    distance[indices[widx], i, dry.shape[2] - 1, j] = 0.0

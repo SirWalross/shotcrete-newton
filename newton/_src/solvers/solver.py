@@ -265,14 +265,13 @@ class SolverBase:
         """
         raise NotImplementedError()
 
-    def reset(self, state_out: State, world_mask: wp.array | None = None):
+    def reset(self, state_out: State, world_indices: wp.array):
         """
         Reset the model.
 
         Args:
             state_out (State): The reset output state.
-            world_mask (wp.array | None): A mask to only reset certain worlds.
-                Defaults to `None` which resets all worlds.
+            world_indices (wp.array): The indices of the worlds to reset.
         """
         raise NotImplementedError()
 

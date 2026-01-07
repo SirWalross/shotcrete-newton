@@ -11,10 +11,10 @@ class VoxelRewards:
             self.distance = wp.zeros((size[0], size[1] // 16, size[2] // 16), dtype=wp.float32)
             self.smoothness = wp.zeros((size[0], size[1] // 16, size[2] // 16), dtype=wp.float32)
             self.air_gap = wp.zeros((size[0], size[1] // 16, size[2] // 16), dtype=wp.float32)
+            self.adhesion_failure_amount = wp.zeros((size[0],), dtype=wp.float32)
             self.prev_distance = wp.zeros((size[0], size[1] // 16, size[2] // 16), dtype=wp.float32)
             self.prev_smoothness = wp.zeros((size[0], size[1] // 16, size[2] // 16), dtype=wp.float32)
             self.prev_air_gap = wp.zeros((size[0], size[1] // 16, size[2] // 16), dtype=wp.float32)
-            self.adhesion_failure_amount = wp.zeros((size[0],), dtype=wp.float32)
 
     def step(self):
         self.prev_distance, self.distance = self.distance, self.prev_distance
@@ -24,6 +24,15 @@ class VoxelRewards:
         self.prev_air_gap, self.air_gap = self.air_gap, self.prev_air_gap
         self.air_gap.zero_()
         self.adhesion_failure_amount.zero_()
+
+    def reset(self, world_indices: wp.array(dtype=int)):
+        self.distance[world_indices].fill_(0.0)
+        self.smoothness[world_indices].fill_(0.0)
+        self.air_gap[world_indices].fill_(0.0)
+        self.adhesion_failure_amount[world_indices].fill_(0.0)
+        self.prev_distance[world_indices].fill_(0.0)
+        self.prev_smoothness[world_indices].fill_(0.0)
+        self.prev_air_gap[world_indices].fill_(0.0)
 
     @property
     def device(self):
