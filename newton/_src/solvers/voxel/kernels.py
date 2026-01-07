@@ -2,6 +2,13 @@ import warp as wp
 
 SPRAY_COUNT = 1000
 
+@wp.kernel
+def update_cond_kernel(
+    i: wp.array(dtype=int), drip_vel: int, adhesion_check: wp.array(dtype=int), drip: wp.array(dtype=int)
+):
+    adhesion_check[0] = wp.int32(i[0] % 10 == 0)
+    drip[0] = wp.int32(i[0] % drip_vel == 0)
+    i[0] = i[0] + 1
 
 @wp.kernel
 def solidify_kernel(wet: wp.array4d(dtype=wp.float32), dry: wp.array4d(dtype=wp.float32), tc: wp.float32):

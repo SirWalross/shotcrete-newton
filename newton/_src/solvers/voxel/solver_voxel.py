@@ -47,6 +47,7 @@ from .kernels import (
     spray_reward_kernel,
     spray_trajectory_kernel,
     sum_kernel,
+    update_cond_kernel,
     update_directions_kernel,
     update_distances_kernel,
 )
@@ -150,30 +151,25 @@ class SolverVoxel(SolverBase):
         assert self.ee_body_indices.shape[0] == self.shape[0], "Number of end-effectors does not match number of envs"
 
         self.mujoco = SolverMuJoCo(model, **mujoco_config)
-        self.i = 0
+        self.i = wp.zeros(1, dtype=int)
+        self.drip_cond = wp.zeros(1, dtype=int)
+        self.adhesion_cond = wp.zeros(1, dtype=int)
 
     @override
     def step(
         self, state_in: State, state_out: State, control: Control, contacts: Contacts, rewards: VoxelRewards, dt: float
     ):
         s = self.mujoco.step(state_in, state_out, control, contacts, None, dt)
+        wp.launch(update_cond_kernel, dim=1, inputs=[self.i, self.drip_vel], outputs=[self.drip_cond, self.adhesion_cond])
         with wp.ScopedTimer("spraying", active=self.active, synchronize=self.synchronize):
             self.deposit(wp.clone(s.body_q[self.ee_body_indices]), self.model.voxel_pos)
-        if self.i % 10 == 0:
-            with wp.ScopedTimer("adhesion check", active=self.active, synchronize=self.synchronize):
-                self.adhesion_check(rewards)
+        with wp.ScopedTimer("adhesion check", active=self.active, synchronize=self.synchronize):
+            wp.capture_if(self.adhesion_cond, on_true=lambda:self.adhesion_check(rewards))
         with wp.ScopedTimer("solidify", active=self.active, synchronize=self.synchronize):
             wp.launch(solidify_kernel, dim=self.shape, inputs=[self.model.voxel_wet, self.model.voxel_dry, self.tc])
-        if self.i % self.drip_vel == 0:
-            with wp.ScopedTimer("drip", active=self.active, synchronize=self.synchronize):
-                for z in range(self.shape[3] - 2):
-                    wp.launch(
-                        drip_kernel,
-                        dim=(self.shape[0], self.shape[1] - 2, self.shape[2] - 2),
-                        inputs=[self.model.voxel_wet, self.model.voxel_dry, self.model.voxel_distance, z],
-                    )
+        with wp.ScopedTimer("drip", active=self.active, synchronize=self.synchronize):
+            wp.capture_if(self.drip_cond, on_true=self.drip)
         self.update_rewards(rewards)
-        self.i += 1
         return s
 
     @override
@@ -194,6 +190,14 @@ class SolverVoxel(SolverBase):
                 dim=(self.shape[0], self.shape[1] - 2, self.shape[3] - 2),
                 inputs=[self.model.voxel_wet, self.model.voxel_dry, self.h],
                 outputs=[rewards.distance, rewards.smoothness, rewards.air_gap],
+            )
+
+    def drip(self):
+        for z in range(self.shape[3] - 2):
+            wp.launch(
+                drip_kernel,
+                dim=(self.shape[0], self.shape[1] - 2, self.shape[2] - 2),
+                inputs=[self.model.voxel_wet, self.model.voxel_dry, self.model.voxel_distance, z],
             )
 
     def adhesion_check(self, rewards: VoxelRewards):
