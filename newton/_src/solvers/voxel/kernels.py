@@ -299,12 +299,12 @@ def spray_trajectory_kernel(
 @wp.func
 def valid_pos(pos: wp.vec3i, shape: wp._src.types.shape_t) -> bool:
     return (
-        pos[0] < shape[1] - 5
-        and pos[0] >= 5
-        and pos[1] < shape[2] - 5
-        and pos[1] >= 5
-        and pos[2] < shape[3] - 5
-        and pos[2] >= 5
+        pos[0] < shape[1]
+        and pos[0] >= 0
+        and pos[1] < shape[2]
+        and pos[1] >= 0
+        and pos[2] < shape[3]
+        and pos[2] >= 0
     )
 
 
@@ -550,9 +550,9 @@ def spray_distribution_kernel(
 
 
 @wp.kernel
-def randomize_directions_kernel(ray_dir: wp.array2d(dtype=wp.vec3), opening_angle: wp.float32, seed: wp.int32):
+def randomize_directions_kernel(ray_dir: wp.array2d(dtype=wp.vec3), opening_angle: wp.float32, seed: wp.array(dtype=wp.int32)):
     widx, i = wp.tid()
-    state = wp.rand_init(seed, i)
+    state = wp.rand_init(seed[0], i)
     z = wp.cos(opening_angle) + wp.randf(state) * (1.0 - wp.cos(opening_angle))
     phi = wp.randf(state) * wp.pi * 2.0
     ray_dir[widx, i] = vector_in_cone(z, phi, ray_dir[widx, i])
@@ -581,7 +581,7 @@ def update_directions_kernel(
     ee_transforms: wp.array(dtype=wp.transform),
     voxel_pos: wp.array(dtype=wp.vec3f),
     droplet_mass: wp.float32,
-    seed: wp.int32,
+    seed: wp.array(dtype=wp.int32),
     k: wp.int32,
     h: wp.float32,
     width: wp.int32,
@@ -591,7 +591,7 @@ def update_directions_kernel(
 ):
     widx, i = wp.tid()
     z = 1.0 - (1.0 - wp.cos(nozzle_angle)) * (wp.float32(i) + 0.5) / wp.float32(k)
-    state = wp.rand_init(seed)
+    state = wp.rand_init(seed[0])
     phi = wp.float32(i) * wp.pi * (3.0 - wp.sqrt(5.0)) + wp.randf(state, 0.0, wp.pi * 2.0)
     positions[widx, i] = wp.vec3i((wp.transform_get_translation(ee_transforms[widx]) - voxel_pos[widx]) / h) + wp.vec3i(
         width // 2, 0, 0
