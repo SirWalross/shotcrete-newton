@@ -13,9 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
-from typing import Sequence
-
 import numpy as np
 import warp as wp
 
@@ -23,9 +20,10 @@ LINEAR_SPACING = wp.float32(0.002)  # m
 
 import re
 
+import newton
+
 from ...core.types import override
 from ...sim import Contacts, Control, Model, State, VoxelRewards
-from ..mujoco import SolverMuJoCo
 from ..solver import SolverBase
 from .kernels import (
     SPRAY_COUNT,
@@ -52,6 +50,7 @@ from .kernels import (
     update_cond_kernel,
     update_directions_kernel,
     update_distances_kernel,
+    update_robot_position_kernel,
 )
 
 
@@ -152,7 +151,6 @@ class SolverVoxel(SolverBase):
         )
         assert self.ee_body_indices.shape[0] == self.shape[0], "Number of end-effectors does not match number of envs"
 
-        self.mujoco = SolverMuJoCo(model, **mujoco_config)
         self.i = wp.zeros(1, dtype=int)
         self.drip_cond = wp.zeros(1, dtype=int)
         self.adhesion_cond = wp.zeros(1, dtype=int)
@@ -161,12 +159,11 @@ class SolverVoxel(SolverBase):
     def step(
         self, state_in: State, state_out: State, control: Control, contacts: Contacts, rewards: VoxelRewards, dt: float
     ):
-        s = self.mujoco.step(state_in, state_out, control, contacts, None, dt)
         wp.launch(
             update_cond_kernel, dim=1, inputs=[self.i, self.drip_vel], outputs=[self.drip_cond, self.adhesion_cond]
         )
         with wp.ScopedTimer("spraying", active=self.active, synchronize=self.synchronize):
-            self.deposit(wp.clone(s.body_q[self.ee_body_indices]), self.model.voxel_pos)
+            self.deposit(wp.clone(state_in.body_q[self.ee_body_indices]), self.model.voxel_pos)
         with wp.ScopedTimer("adhesion check", active=self.active, synchronize=self.synchronize):
             wp.capture_if(self.adhesion_cond, on_true=lambda: self.adhesion_check(rewards))
         with wp.ScopedTimer("solidify", active=self.active, synchronize=self.synchronize):
@@ -174,7 +171,25 @@ class SolverVoxel(SolverBase):
         with wp.ScopedTimer("drip", active=self.active, synchronize=self.synchronize):
             wp.capture_if(self.drip_cond, on_true=self.drip)
         self.update_rewards(rewards)
-        return s
+        wp.launch(
+            update_robot_position_kernel,
+            dim=state_in.joint_q.shape,
+            inputs=[
+                state_in.joint_q,
+                state_in.joint_qd,
+                state_in.joint_q.shape[0] // self.model.num_worlds,
+                self.model.joint_velocity_limit,
+                control.joint_target_pos,
+                control.joint_target_vel,
+                dt,
+            ],
+            outputs=[
+                state_out.joint_q,
+                state_out.joint_qd,
+            ],
+        )
+        newton.eval_fk(self.model, state_out.joint_q, state_out.joint_qd, state_out)
+        return state_out
 
     @override
     def reset(self, state_out: State, world_indices: wp.array(dtype=int)):

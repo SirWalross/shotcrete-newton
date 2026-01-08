@@ -275,7 +275,7 @@ def drip_kernel(
 def out_of_bounds_spray_kernel(
     wet: wp.array4d(dtype=wp.float32),
     ray_trajectory: wp.array3d(dtype=wp.vec3i),
-    out_of_bounds_spray: wp.array(dtype=wp.float32)
+    out_of_bounds_spray: wp.array(dtype=wp.float32),
 ):
     widx, i = wp.tid()
     wp.atomic_add(out_of_bounds_spray, widx, wp.float32(not valid_pos(ray_trajectory[widx, i, 0], wet.shape)))
@@ -308,14 +308,7 @@ def spray_trajectory_kernel(
 
 @wp.func
 def valid_pos(pos: wp.vec3i, shape: wp._src.types.shape_t) -> bool:
-    return (
-        pos[0] < shape[1]
-        and pos[0] >= 0
-        and pos[1] < shape[2]
-        and pos[1] >= 0
-        and pos[2] < shape[3]
-        and pos[2] >= 0
-    )
+    return pos[0] < shape[1] and pos[0] >= 0 and pos[1] < shape[2] and pos[1] >= 0 and pos[2] < shape[3] and pos[2] >= 0
 
 
 @wp.kernel
@@ -560,7 +553,9 @@ def spray_distribution_kernel(
 
 
 @wp.kernel
-def randomize_directions_kernel(ray_dir: wp.array2d(dtype=wp.vec3), opening_angle: wp.float32, seed: wp.array(dtype=wp.int32)):
+def randomize_directions_kernel(
+    ray_dir: wp.array2d(dtype=wp.vec3), opening_angle: wp.float32, seed: wp.array(dtype=wp.int32)
+):
     widx, i = wp.tid()
     state = wp.rand_init(seed[0], i)
     z = wp.cos(opening_angle) + wp.randf(state) * (1.0 - wp.cos(opening_angle))
@@ -663,3 +658,24 @@ def set_wall_kernel(
     widx, i, j = wp.tid()
     dry[indices[widx], i, dry.shape[2] - 1, j] = 10.0
     distance[indices[widx], i, dry.shape[2] - 1, j] = 0.0
+
+
+@wp.kernel
+def update_robot_position_kernel(
+    j: wp.array(dtype=wp.float32),
+    jq: wp.array(dtype=wp.float32),
+    num_joints: int,
+    vel_limit: wp.array(dtype=wp.float32),
+    j_target: wp.array(dtype=wp.float32),
+    jq_target: wp.array(dtype=wp.float32),
+    dt: float,
+    out_j: wp.array(dtype=wp.float32),
+    out_jq: wp.array(dtype=wp.float32),
+):
+    i = wp.tid()
+    v_target = (j_target[i] - j[i]) / dt
+    a_target = (v_target - jq[i]) / dt
+    a_next = wp.clamp(a_target, -1.0, 1.0)
+    v_next = wp.clamp(jq[i] + a_next * dt, -10.0, 10.0)
+    out_j[i] = j[i] + v_next * dt
+    out_jq[i] = v_next
