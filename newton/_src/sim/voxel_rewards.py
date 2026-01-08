@@ -6,25 +6,26 @@ from warp.context import Devicelike
 
 class VoxelRewards:
     def __init__(self, size, device: Devicelike = None):
+        self.size = size
         with wp.ScopedDevice(device):
             # rigid contacts
-            self.distance = wp.zeros((size[0], size[1] // 16, size[2] // 16), dtype=wp.float32)
-            self.prev_distance = wp.zeros((size[0], size[1] // 16, size[2] // 16), dtype=wp.float32)
-            self.smoothness = wp.zeros((size[0], size[1] // 16, size[2] // 16), dtype=wp.float32)
-            self.air_gap = wp.zeros((size[0], size[1] // 16, size[2] // 16), dtype=wp.float32)
+            self.distance = wp.zeros((size[0], size[1] // 16, size[3] // 16), dtype=wp.float32)
+            self.prev_distance = wp.zeros((size[0], size[1] // 16, size[3] // 16), dtype=wp.float32)
+            self.smoothness = wp.zeros((size[0], size[1] // 16, size[3] // 16), dtype=wp.float32)
+            self.air_gap = wp.zeros((size[0], size[1] // 16, size[3] // 16), dtype=wp.float32)
             self.adhesion_failure_amount = wp.zeros((size[0],), dtype=wp.float32)
             self.out_of_bounds_spray = wp.zeros((size[0],), dtype=wp.float32)
 
     def step(self):
         self.prev_distance = wp.to_torch(self.distance).clone()
-        self.distance.zero_()
+        self.distance.fill_(self.size[2] * 0.005)
         self.smoothness.zero_()
         self.air_gap.zero_()
         self.adhesion_failure_amount.zero_()
         self.out_of_bounds_spray.zero_()
 
     def reset(self, world_indices: wp.array(dtype=int)):
-        self.distance[world_indices].zero_()
+        self.distance[world_indices].fill_(self.size[2] * 0.005)
         self.smoothness[world_indices].zero_()
         self.air_gap[world_indices].zero_()
         self.adhesion_failure_amount[world_indices].zero_()
