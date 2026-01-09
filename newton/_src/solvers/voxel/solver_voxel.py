@@ -84,6 +84,7 @@ class SolverVoxel(SolverBase):
         self,
         model: Model,
         *,
+        tcp_body_name: str,
         s: int = 9,
         backtrack_count: int = 10,
         h: float = 0.005,
@@ -103,10 +104,8 @@ class SolverVoxel(SolverBase):
         adhesion_strength: float = 20.0,
         compression_strength: float = 2000.0,
         wet_strength_penalty: float = 0.2,
-        mujoco_config,
     ):
         super().__init__(model=model)
-        mujoco_config.pop("solver_type")
 
         self.active = False
         self.synchronize = False
@@ -146,7 +145,7 @@ class SolverVoxel(SolverBase):
 
         # find indices for the end-effector bodies in the different envs
         self.ee_body_indices = wp.array(
-            [i for i, key in enumerate(self.model.body_key) if re.match("/World/envs/env_.*/Robot/ee_link", key)],
+            [i for i, key in enumerate(self.model.body_key) if re.match(f"/World/envs/env_.*/{tcp_body_name}", key)],
             dtype=int,
         )
         assert self.ee_body_indices.shape[0] == self.shape[0], "Number of end-effectors does not match number of envs"
@@ -163,7 +162,7 @@ class SolverVoxel(SolverBase):
             update_cond_kernel, dim=1, inputs=[self.i, self.drip_vel], outputs=[self.drip_cond, self.adhesion_cond]
         )
         with wp.ScopedTimer("spraying", active=self.active, synchronize=self.synchronize):
-            self.deposit(wp.clone(state_in.body_q[self.ee_body_indices]), self.model.voxel_pos)
+            self.deposit(wp.clone(self.model.body_q[self.ee_body_indices]), self.model.voxel_pos)
         with wp.ScopedTimer("adhesion check", active=self.active, synchronize=self.synchronize):
             wp.capture_if(self.adhesion_cond, on_true=lambda: self.adhesion_check(rewards))
         with wp.ScopedTimer("solidify", active=self.active, synchronize=self.synchronize):
@@ -188,7 +187,7 @@ class SolverVoxel(SolverBase):
                 state_out.joint_qd,
             ],
         )
-        newton.eval_fk(self.model, state_out.joint_q, state_out.joint_qd, state_out)
+        # newton.eval_fk(self.model, state_out.joint_q, state_out.joint_qd, state_out)
         return state_out
 
     @override
