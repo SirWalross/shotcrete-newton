@@ -109,15 +109,22 @@ def drop_down_kernel(
 ):
     widx, i, j = wp.tid()
     write_pos = wp.int32(1)
-    for k in range(wet.shape[1]):
+    z_dim = wet.shape[3]
+    for k in range(z_dim):
         if current_load[widx, i, j, k] < 0:
-            # drop down
-            w = wp.atomic_exch(wet, widx, i, j, k, 0.0)
-            d = wp.atomic_exch(dry, widx, i, j, k, 0.0)
+            w = wet[widx, i, j, k]
+            d = dry[widx, i, j, k]
+
+            # Direct writes (no atomics)
+            wet[widx, i, j, k] = 0.0
+            dry[widx, i, j, k] = 0.0
             distance[widx, i, j, k] = 1e6
             wet[widx, i, j, write_pos] = w + d
             wp.atomic_add(adhesion_failure_amount, widx, w + d)
+
+            # Distance propagation
             distance[widx, i, j, write_pos] = distance[widx, i, j, write_pos - 1] + 0.1
+
             write_pos += 1
         elif (wet[widx, i, j, k] + dry[widx, i, j, k]) > 0.5:
             write_pos = k + 1
@@ -141,60 +148,37 @@ def capacity_propagation_kernel(
     for l in range(length):
         indices = wp.vec3i(i + 1, j + 1, k + 1) + direction * (l + offset)
         other = wp.vec3i(i + 1, j + 1, k + 1) + direction * (l + offset + 1)
+
         wd = wet[widx, other[0], other[1], other[2]]
         dd = dry[widx, other[0], other[1], other[2]]
-        dist = distance[widx, indices[0], indices[1], indices[2]]
-        if distance[widx, other[0], other[1], other[2]] > dist and (wd + dd) > 0.5:
-            # pass capacity to neighbour
-            w = wet[widx, indices[0], indices[1], indices[2]]
-            d = dry[widx, indices[0], indices[1], indices[2]]
-            load = current_load[widx, indices[0], indices[1], indices[2]]
-            num_neighbours = wp.float32(1.0)
-            if direction[2] == 0:
-                # calculate horizontal neighbours
-                num_neighbours = wp.max(
-                    1.0,
-                    wp.float32(
-                        distance[widx, indices[0] + 1, indices[1], indices[2]] > dist
-                        and (
-                            wet[widx, indices[0] + 1, indices[1], indices[2]]
-                            + dry[widx, indices[0] + 1, indices[1], indices[2]]
-                        )
-                        > 0.5
-                    )
-                    + wp.float32(
-                        distance[widx, indices[0] - 1, indices[1], indices[2]] > dist
-                        and (
-                            wet[widx, indices[0] - 1, indices[1], indices[2]]
-                            + dry[widx, indices[0] - 1, indices[1], indices[2]]
-                        )
-                        > 0.5
-                    )
-                    + wp.float32(
-                        distance[widx, indices[0], indices[1] + 1, indices[2]] > dist
-                        and (
-                            wet[widx, indices[0], indices[1] + 1, indices[2]]
-                            + dry[widx, indices[0], indices[1] + 1, indices[2]]
-                        )
-                        > 0.5
-                    )
-                    + wp.float32(
-                        distance[widx, indices[0], indices[1] - 1, indices[2]] > dist
-                        and (
-                            wet[widx, indices[0], indices[1] - 1, indices[2]]
-                            + dry[widx, indices[0], indices[1] - 1, indices[2]]
-                        )
-                        > 0.5
-                    ),
+
+        if (wd + dd) > 0.5:
+            dist = distance[widx, indices[0], indices[1], indices[2]]
+            if distance[widx, other[0], other[1], other[2]] > dist:
+                # pass capacity to neighbour
+                w = wet[widx, indices[0], indices[1], indices[2]]
+                d = dry[widx, indices[0], indices[1], indices[2]]
+                load = current_load[widx, indices[0], indices[1], indices[2]]
+
+                num_neighbours = 1.0
+                if direction[2] == 0:
+                    n1 = (distance[widx, indices[0] + 1, indices[1], indices[2]] > dist and
+                            (wet[widx, indices[0] + 1, indices[1], indices[2]] + dry[widx, indices[0] + 1, indices[1], indices[2]]) > 0.5)
+                    n2 = (distance[widx, indices[0] - 1, indices[1], indices[2]] > dist and
+                            (wet[widx, indices[0] - 1, indices[1], indices[2]] + dry[widx, indices[0] - 1, indices[1], indices[2]]) > 0.5)
+                    n3 = (distance[widx, indices[0], indices[1] + 1, indices[2]] > dist and
+                            (wet[widx, indices[0], indices[1] + 1, indices[2]] + dry[widx, indices[0], indices[1] + 1, indices[2]]) > 0.5)
+                    n4 = (distance[widx, indices[0], indices[1] - 1, indices[2]] > dist and
+                            (wet[widx, indices[0], indices[1] - 1, indices[2]] + dry[widx, indices[0], indices[1] - 1, indices[2]]) > 0.5)
+
+                    num_neighbours = wp.max(1.0, wp.float32(n1) + wp.float32(n2) + wp.float32(n3) + wp.float32(n4))
+
+                new_val = wp.min(load / num_neighbours, strength(w, d, direction, wsp, cs, ss, as_)) - wd - dd
+
+                current_load[widx, other[0], other[1], other[2]] = wp.max(
+                    current_load[widx, other[0], other[1], other[2]],
+                    new_val
                 )
-            wp.atomic_max(
-                current_load,
-                widx,
-                other[0],
-                other[1],
-                other[2],
-                wp.min(load / num_neighbours, strength(w, d, direction, wsp, cs, ss, as_)) - wd - dd,
-            )
 
 
 @wp.kernel
@@ -235,41 +219,64 @@ def drip_kernel(
     wet: wp.array4d(dtype=wp.float32),
     dry: wp.array4d(dtype=wp.float32),
     distance: wp.array4d(dtype=wp.float32),
-    k: wp.int32,
+    max_z: wp.int32,
 ):
     widx, i, j = wp.tid()
-    w = wet[widx, i + 1, j + 1, k + 1]
-    d = dry[widx, i + 1, j + 1, k + 1]
-    density_below = dry[widx, i + 1, j + 1, k] + wet[widx, i + 1, j + 1, k]
-    drip_amount = wp.min(w, 1.0 - density_below)
-    dist = distance[widx, i + 1, j + 1, k + 1]
-    dist_below = distance[widx, i + 1, j + 1, k]
-    if drip_amount > 0.0:
-        # only drip below
-        wp.atomic_add(wet, widx, i + 1, j + 1, k, drip_amount)
-        wp.atomic_add(wet, widx, i + 1, j + 1, k + 1, -drip_amount)
-        wp.atomic_min(distance, widx, i + 1, j + 1, k, dist + 1.0)
-    elif w > 0.0:
-        # distribute drip to the side
-        d1 = 1.0 - dry[widx, i + 2, j + 1, k] - wet[widx, i + 2, j + 1, k]
-        d2 = 1.0 - dry[widx, i + 1, j + 2, k] - wet[widx, i + 1, j + 2, k]
-        d3 = 1.0 - dry[widx, i, j + 1, k] - wet[widx, i, j + 1, k]
-        d4 = 1.0 - dry[widx, i + 1, j, k] - wet[widx, i + 1, j, k]
-        density_side = d1 + d2 + d3 + d4
-        if density_side > 0.0:
-            drip_amount = wp.min(w, density_side)
-            wp.atomic_add(wet, widx, i + 2, j + 1, k, drip_amount * d1 / density_side)
-            wp.atomic_min(distance, widx, i + 2, j + 1, k, dist_below + 1.0)
-            wp.atomic_add(wet, widx, i + 1, j + 2, k, drip_amount * d2 / density_side)
-            wp.atomic_min(distance, widx, i + 1, j + 2, k, dist_below + 1.0)
-            wp.atomic_add(wet, widx, i, j + 1, k, drip_amount * d3 / density_side)
-            wp.atomic_min(distance, widx, i, j + 1, k, dist_below + 1.0)
-            wp.atomic_add(wet, widx, i + 1, j, k, drip_amount * d4 / density_side)
-            wp.atomic_min(distance, widx, i + 1, j, k, dist_below + 1.0)
-            wp.atomic_add(wet, widx, i + 1, j + 1, k + 1, -drip_amount)
-    if w + d <= drip_amount and w > 0.0:
-        distance[widx, i + 1, j + 1, k + 1] = 1e6
 
+    ii = i + 1
+    jj = j + 1
+
+    for k in range(max_z):
+        w = wet[widx, ii, jj, k + 1]
+        if w > 0.0:
+            d = dry[widx, ii, jj, k + 1]
+            wet_below = wet[widx, ii, jj, k]
+            density_below = dry[widx, ii, jj, k] + wet_below
+
+            drip_amount = wp.min(w, 1.0 - density_below)
+            dist = distance[widx, ii, jj, k + 1]
+            dist_below = distance[widx, ii, jj, k]
+
+            if drip_amount > 0.0:
+                wet[widx, ii, jj, k] = wet_below + drip_amount
+                wet[widx, ii, jj, k + 1] = w - drip_amount
+                distance[widx, ii, jj, k] = wp.min(distance[widx, ii, jj, k], dist + 1.0)
+            else:
+                d1 = 1.0 - dry[widx, ii + 1, jj, k] - wet[widx, ii + 1, jj, k]
+                d2 = 1.0 - dry[widx, ii, jj + 1, k] - wet[widx, ii, jj + 1, k]
+                d3 = 1.0 - dry[widx, ii - 1, jj, k] - wet[widx, ii - 1, jj, k]
+                d4 = 1.0 - dry[widx, ii, jj - 1, k] - wet[widx, ii, jj - 1, k]
+
+                density_side = d1 + d2 + d3 + d4
+
+                if density_side > 0.0:
+                    drip_amount = wp.min(w, density_side)
+
+                    if d1 > 0.0:
+                        val = drip_amount * d1 / density_side
+                        wp.atomic_add(wet, widx, ii + 1, jj, k, val)
+                        wp.atomic_min(distance, widx, ii + 1, jj, k, dist_below + 1.0)
+
+                    if d2 > 0.0:
+                        val = drip_amount * d2 / density_side
+                        wp.atomic_add(wet, widx, ii, jj + 1, k, val)
+                        wp.atomic_min(distance, widx, ii, jj + 1, k, dist_below + 1.0)
+
+                    if d3 > 0.0:
+                        val = drip_amount * d3 / density_side
+                        wp.atomic_add(wet, widx, ii - 1, jj, k, val)
+                        wp.atomic_min(distance, widx, ii - 1, jj, k, dist_below + 1.0)
+
+                    if d4 > 0.0:
+                        val = drip_amount * d4 / density_side
+                        wp.atomic_add(wet, widx, ii, jj - 1, k, val)
+                        wp.atomic_min(distance, widx, ii, jj - 1, k, dist_below + 1.0)
+
+                    wet[widx, ii, jj, k + 1] = wet[widx, ii, jj, k + 1] - drip_amount
+
+            w_new = wet[widx, ii, jj, k + 1]
+            if w_new + d <= drip_amount and w_new > 0.0:
+                distance[widx, ii, jj, k + 1] = 1e6
 
 @wp.kernel
 def out_of_bounds_spray_kernel(
