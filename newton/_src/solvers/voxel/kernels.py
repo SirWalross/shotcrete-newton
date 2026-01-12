@@ -621,6 +621,7 @@ def spray_reward_kernel(
     wet: wp.array4d(dtype=wp.float32),
     dry: wp.array4d(dtype=wp.float32),
     h: wp.float32,
+    decimation: wp.int32,
     height: wp.array3d(dtype=wp.float32),
     height_sq: wp.array3d(dtype=wp.float32),
     air_gap: wp.array3d(dtype=wp.float32),
@@ -631,11 +632,11 @@ def spray_reward_kernel(
         w = wet[widx, i + 1, j, k + 1]
         d = dry[widx, i + 1, j, k + 1]
         if not hit and (w + d) > 0.5:
-            wp.atomic_add(height, widx, i // 16, k // 16, wp.float32(j) * h)
-            wp.atomic_add(height_sq, widx, i // 16, k // 16, wp.float32(j) * h * wp.float32(j) * h)
+            wp.atomic_add(height, widx, i // decimation, k // decimation, wp.float32(j) * h)
+            wp.atomic_add(height_sq, widx, i // decimation, k // decimation, wp.float32(j) * h * wp.float32(j) * h)
             hit = True
         if hit:
-            wp.atomic_add(air_gap, widx, i // 16, k // 16, relu(1.0 - w - d))
+            wp.atomic_add(air_gap, widx, i // decimation, k // decimation, relu(1.0 - w - d))
 
 
 @wp.kernel

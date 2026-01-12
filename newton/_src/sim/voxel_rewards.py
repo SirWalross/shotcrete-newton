@@ -5,14 +5,15 @@ from warp.context import Devicelike
 
 
 class VoxelRewards:
-    def __init__(self, size, device: Devicelike = None):
+    def __init__(self, size, decimation: int, device: Devicelike = None):
         self.size = size
+        self.decimation = decimation
         with wp.ScopedDevice(device):
             # rigid contacts
-            self.distance = wp.zeros((size[0], size[1] // 16, size[3] // 16), dtype=wp.float32)
-            self.prev_distance = wp.zeros((size[0], size[1] // 16, size[3] // 16), dtype=wp.float32)
-            self.smoothness = wp.zeros((size[0], size[1] // 16, size[3] // 16), dtype=wp.float32)
-            self.air_gap = wp.zeros((size[0], size[1] // 16, size[3] // 16), dtype=wp.float32)
+            self.distance = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
+            self.prev_distance = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
+            self.smoothness = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
+            self.air_gap = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
             self.adhesion_failure_amount = wp.zeros((size[0],), dtype=wp.float32)
             self.out_of_bounds_spray = wp.zeros((size[0],), dtype=wp.float32)
 
