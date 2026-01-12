@@ -680,3 +680,11 @@ def update_robot_position_kernel(
     v_next = wp.clamp(jq[i] + a_next * dt, -10.0, 10.0)
     out_j[i] = j[i] + v_next * dt
     out_jq[i] = v_next
+
+@wp.kernel
+def update_body_positions_kernel(
+    body_q_in: wp.array(dtype=wp.transformf),
+    body_q_out: wp.array(dtype=wp.transformf)
+):
+    i = wp.tid()
+    body_q_out[i] = body_q_in[i]
