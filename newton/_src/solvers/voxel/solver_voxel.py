@@ -187,7 +187,11 @@ class SolverVoxel(SolverBase):
         with wp.ScopedTimer("adhesion check", active=self.active, synchronize=self.synchronize):
             wp.capture_if(self.adhesion_cond, on_true=lambda: self.adhesion_check(rewards))
         with wp.ScopedTimer("solidify", active=self.active, synchronize=self.synchronize):
-            wp.launch(solidify_kernel, dim=self.shape, inputs=[self.model.voxel_wet, self.model.voxel_dry, self.tc, self.global_bbox])
+            wp.launch(
+                solidify_kernel,
+                dim=self.shape,
+                inputs=[self.model.voxel_wet, self.model.voxel_dry, self.tc, self.global_bbox],
+            )
         with wp.ScopedTimer("drip", active=self.active, synchronize=self.synchronize):
             wp.capture_if(self.drip_cond, on_true=self.drip)
         self.update_rewards(rewards)
@@ -568,7 +572,7 @@ class SolverVoxel(SolverBase):
                 for _ in range(5):
                     wp.launch(
                         spray_redistribution_kernel,
-                        dim=(self.shape[0], self.k, self.k),
+                        dim=(self.shape[0], self.k),
                         inputs=[
                             self.ray_trajectory[:, :, 0],
                             self.spray_overlap,
@@ -576,6 +580,7 @@ class SolverVoxel(SolverBase):
                             ee_transforms,
                             self.overlap_distance,
                             self.anisotropic_distance_weight,
+                            self.k,
                         ],
                     )
         with wp.ScopedTimer("spray deposit", active=self.active, synchronize=self.synchronize):

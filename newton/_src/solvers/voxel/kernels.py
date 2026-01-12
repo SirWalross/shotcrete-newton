@@ -558,18 +558,22 @@ def spray_redistribution_kernel(
     transforms: wp.array(dtype=wp.transform),
     overlap_distance: wp.float32,
     anisotropic_distance_weight: wp.float32,
+    k: wp.int32,
 ):
-    widx, i, j, _ = wp.tid()
+    widx, i = wp.tid()
     direction = wp.transform_vector(transforms[widx], wp.vec3f(1.0, 0.0, 0.0))
-    dist = anisotropic_distance(
-        wp.vec3f(voxels[widx, i]), wp.vec3f(voxels[widx, j]), direction, anisotropic_distance_weight
-    )
-    ij_overlap = relu(((overlap_distance / 4.0) - dist) / (overlap_distance / 4.0))
-    if overlap[widx, j] > overlap[widx, i]:
-        # move mass from partner
-        m = mass[widx, j] * (overlap[widx, j] - overlap[widx, i]) / overlap[widx, j] * 0.4 * ij_overlap
-        wp.atomic_sub(mass, widx, j, m)
-        wp.atomic_add(mass, widx, i, m)
+    my_overlap = overlap[widx, i]
+    for j in range(k):
+        dist = anisotropic_distance(
+            wp.vec3f(voxels[widx, i]), wp.vec3f(voxels[widx, j]), direction, anisotropic_distance_weight
+        )
+        other_overlap = overlap[widx, j]
+        if other_overlap > my_overlap:
+            ij_overlap = relu(((overlap_distance / 4.0) - dist) / (overlap_distance / 4.0))
+            # move mass from partner
+            m = mass[widx, j] * (overlap[widx, j] - overlap[widx, i]) / overlap[widx, j] * 0.4 * ij_overlap
+            wp.atomic_sub(mass, widx, j, m)
+            wp.atomic_add(mass, widx, i, m)
 
 
 @wp.kernel
