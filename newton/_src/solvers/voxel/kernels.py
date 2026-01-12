@@ -7,7 +7,7 @@ SPRAY_COUNT = 1000
 def update_cond_kernel(
     i: wp.array(dtype=int), drip_vel: int, adhesion_check: wp.array(dtype=int), drip: wp.array(dtype=int)
 ):
-    adhesion_check[0] = wp.int32(i[0] % 20 == 0)
+    adhesion_check[0] = wp.int32(i[0] % 10 == 0)
     drip[0] = wp.int32(i[0] % drip_vel == 0)
     i[0] = i[0] + 1
 
@@ -105,12 +105,17 @@ def drop_down_kernel(
     dry: wp.array4d(dtype=wp.float32),
     distance: wp.array4d(dtype=wp.float32),
     current_load: wp.array4d(dtype=wp.float32),
+    bbox: wp.array2d(dtype=wp.int32),
     adhesion_failure_amount: wp.array(dtype=wp.float32),
 ):
     widx, i, j = wp.tid()
     write_pos = wp.int32(1)
     z_dim = wet.shape[3]
+    if not in_bbox_all_height(bbox, wp.vec3i(i, j, 0)):
+        return
     for k in range(z_dim):
+        if not in_bbox(bbox, wp.vec3i(i, j, k)):
+            continue
         if current_load[widx, i, j, k] < 0:
             w = wet[widx, i, j, k]
             d = dry[widx, i, j, k]
@@ -130,12 +135,39 @@ def drop_down_kernel(
             write_pos = k + 1
 
 
+@wp.func
+def in_bbox(bbox: wp.array(dtype=wp.int32), i: wp.vec3i):
+    return (
+        ((bbox[0] - 10) > i[0])
+        and ((bbox[1] - 10) > i[1])
+        and ((bbox[2] - 10) > i[2])
+        and ((bbox[3] + 10) < i[0])
+        and ((bbox[4] + 10) < i[1])
+        and ((bbox[5] + 10) < i[2])
+    ) or (
+        ((bbox[6] - 10) > i[0])
+        and ((bbox[7] - 10) > i[1])
+        and ((bbox[8] - 10) > i[2])
+        and ((bbox[9] + 10) < i[0])
+        and ((bbox[10] + 10) < i[1])
+        and ((bbox[11] + 10) < i[2])
+    )
+
+
+@wp.func
+def in_bbox_all_height(bbox: wp.array(dtype=wp.int32), i: wp.vec3i):
+    return (
+        ((bbox[0] - 10) > i[0]) and ((bbox[1] - 10) > i[1]) and ((bbox[3] + 10) < i[0]) and ((bbox[4] + 10) < i[1])
+    ) or (((bbox[6] - 10) > i[0]) and ((bbox[7] - 10) > i[1]) and ((bbox[9] + 10) < i[0]) and ((bbox[10] + 10) < i[1]))
+
+
 @wp.kernel
 def capacity_propagation_kernel(
     wet: wp.array4d(dtype=wp.float32),
     dry: wp.array4d(dtype=wp.float32),
     current_load: wp.array4d(dtype=wp.float32),
     distance: wp.array4d(dtype=wp.float32),
+    bbox: wp.array2d(dtype=wp.int32),
     offset: wp.int32,
     length: wp.int32,
     direction: wp.vec3i,
@@ -147,8 +179,10 @@ def capacity_propagation_kernel(
     widx, i, j, k = wp.tid()
     for l in range(length):
         indices = wp.vec3i(i + 1, j + 1, k + 1) + direction * (l + offset)
-        other = wp.vec3i(i + 1, j + 1, k + 1) + direction * (l + offset + 1)
+        if not in_bbox(bbox[widx], indices):
+            continue
 
+        other = wp.vec3i(i + 1, j + 1, k + 1) + direction * (l + offset + 1)
         wd = wet[widx, other[0], other[1], other[2]]
         dd = dry[widx, other[0], other[1], other[2]]
 
@@ -162,22 +196,45 @@ def capacity_propagation_kernel(
 
                 num_neighbours = 1.0
                 if direction[2] == 0:
-                    n1 = (distance[widx, indices[0] + 1, indices[1], indices[2]] > dist and
-                            (wet[widx, indices[0] + 1, indices[1], indices[2]] + dry[widx, indices[0] + 1, indices[1], indices[2]]) > 0.5)
-                    n2 = (distance[widx, indices[0] - 1, indices[1], indices[2]] > dist and
-                            (wet[widx, indices[0] - 1, indices[1], indices[2]] + dry[widx, indices[0] - 1, indices[1], indices[2]]) > 0.5)
-                    n3 = (distance[widx, indices[0], indices[1] + 1, indices[2]] > dist and
-                            (wet[widx, indices[0], indices[1] + 1, indices[2]] + dry[widx, indices[0], indices[1] + 1, indices[2]]) > 0.5)
-                    n4 = (distance[widx, indices[0], indices[1] - 1, indices[2]] > dist and
-                            (wet[widx, indices[0], indices[1] - 1, indices[2]] + dry[widx, indices[0], indices[1] - 1, indices[2]]) > 0.5)
+                    n1 = (
+                        distance[widx, indices[0] + 1, indices[1], indices[2]] > dist
+                        and (
+                            wet[widx, indices[0] + 1, indices[1], indices[2]]
+                            + dry[widx, indices[0] + 1, indices[1], indices[2]]
+                        )
+                        > 0.5
+                    )
+                    n2 = (
+                        distance[widx, indices[0] - 1, indices[1], indices[2]] > dist
+                        and (
+                            wet[widx, indices[0] - 1, indices[1], indices[2]]
+                            + dry[widx, indices[0] - 1, indices[1], indices[2]]
+                        )
+                        > 0.5
+                    )
+                    n3 = (
+                        distance[widx, indices[0], indices[1] + 1, indices[2]] > dist
+                        and (
+                            wet[widx, indices[0], indices[1] + 1, indices[2]]
+                            + dry[widx, indices[0], indices[1] + 1, indices[2]]
+                        )
+                        > 0.5
+                    )
+                    n4 = (
+                        distance[widx, indices[0], indices[1] - 1, indices[2]] > dist
+                        and (
+                            wet[widx, indices[0], indices[1] - 1, indices[2]]
+                            + dry[widx, indices[0], indices[1] - 1, indices[2]]
+                        )
+                        > 0.5
+                    )
 
                     num_neighbours = wp.max(1.0, wp.float32(n1) + wp.float32(n2) + wp.float32(n3) + wp.float32(n4))
 
                 new_val = wp.min(load / num_neighbours, strength(w, d, direction, wsp, cs, ss, as_)) - wd - dd
 
                 current_load[widx, other[0], other[1], other[2]] = wp.max(
-                    current_load[widx, other[0], other[1], other[2]],
-                    new_val
+                    current_load[widx, other[0], other[1], other[2]], new_val
                 )
 
 
@@ -277,6 +334,7 @@ def drip_kernel(
             w_new = wet[widx, ii, jj, k + 1]
             if w_new + d <= drip_amount and w_new > 0.0:
                 distance[widx, ii, jj, k + 1] = 1e6
+
 
 @wp.kernel
 def out_of_bounds_spray_kernel(
@@ -688,10 +746,44 @@ def update_robot_position_kernel(
     out_j[i] = j[i] + v_next * dt
     out_jq[i] = v_next
 
+
 @wp.kernel
-def update_body_positions_kernel(
-    body_q_in: wp.array(dtype=wp.transformf),
-    body_q_out: wp.array(dtype=wp.transformf)
-):
+def update_body_positions_kernel(body_q_in: wp.array(dtype=wp.transformf), body_q_out: wp.array(dtype=wp.transformf)):
     i = wp.tid()
     body_q_out[i] = body_q_in[i]
+
+
+@wp.kernel
+def update_bbox_kernel(
+    ray_traj: wp.array3d(dtype=wp.vec3i), rebound_ray_traj: wp.array3d(dtype=wp.vec3i), bbox: wp.array2d(dtype=wp.int32)
+):
+    widx, i, k = wp.tid()
+    wp.atomic_min(bbox, widx, 0, ray_traj[widx, i, k][0])
+    wp.atomic_min(bbox, widx, 1, ray_traj[widx, i, k][1])
+    wp.atomic_min(bbox, widx, 2, ray_traj[widx, i, k][2])
+    wp.atomic_max(bbox, widx, 3, ray_traj[widx, i, k][0])
+    wp.atomic_max(bbox, widx, 4, ray_traj[widx, i, k][1])
+    wp.atomic_max(bbox, widx, 5, ray_traj[widx, i, k][2])
+    wp.atomic_min(bbox, widx, 6, rebound_ray_traj[widx, i, k][0])
+    wp.atomic_min(bbox, widx, 7, rebound_ray_traj[widx, i, k][1])
+    wp.atomic_min(bbox, widx, 8, rebound_ray_traj[widx, i, k][2])
+    wp.atomic_max(bbox, widx, 9, rebound_ray_traj[widx, i, k][0])
+    wp.atomic_max(bbox, widx, 10, rebound_ray_traj[widx, i, k][1])
+    wp.atomic_max(bbox, widx, 11, rebound_ray_traj[widx, i, k][2])
+
+
+@wp.kernel
+def reset_bbox_kernel(bbox: wp.array2d(dtype=wp.int32)):
+    widx = wp.tid()
+    bbox[widx, 0] = 10000
+    bbox[widx, 1] = 10000
+    bbox[widx, 2] = 10000
+    bbox[widx, 3] = 10000
+    bbox[widx, 4] = 10000
+    bbox[widx, 5] = 10000
+    bbox[widx, 6] = 0
+    bbox[widx, 7] = 0
+    bbox[widx, 8] = 0
+    bbox[widx, 9] = 0
+    bbox[widx, 10] = 0
+    bbox[widx, 11] = 0

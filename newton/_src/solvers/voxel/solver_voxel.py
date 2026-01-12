@@ -34,6 +34,7 @@ from .kernels import (
     initialize_load_kernel,
     out_of_bounds_spray_kernel,
     randomize_directions_kernel,
+    reset_bbox_kernel,
     respreading_kernel,
     set_floor_kernel,
     set_wall_kernel,
@@ -47,6 +48,7 @@ from .kernels import (
     spray_reward_kernel,
     spray_trajectory_kernel,
     sum_kernel,
+    update_bbox_kernel,
     update_body_positions_kernel,
     update_cond_kernel,
     update_directions_kernel,
@@ -105,7 +107,7 @@ class SolverVoxel(SolverBase):
         adhesion_strength: float = 20.0,
         compression_strength: float = 2000.0,
         wet_strength_penalty: float = 0.2,
-        debug_mode: bool = False
+        debug_mode: bool = False,
     ):
         super().__init__(model=model)
 
@@ -163,6 +165,7 @@ class SolverVoxel(SolverBase):
         self.spray_neighbours = wp.zeros((self.shape[0], self.k, self.ball_indices.shape[0]), dtype=wp.float32)
         self.density = wp.zeros((self.shape[0], self.k), dtype=wp.float32)
         self.neighbour_count = wp.zeros((self.shape[0], self.k), dtype=wp.float32)
+        self.bbox = wp.zeros((self.shape[0], 12), dtype=wp.int32)
 
     @override
     def step(
@@ -171,6 +174,7 @@ class SolverVoxel(SolverBase):
         wp.launch(
             update_cond_kernel, dim=1, inputs=[self.i, self.drip_vel], outputs=[self.drip_cond, self.adhesion_cond]
         )
+        wp.launch(reset_bbox_kernel, dim=(self.shape[0],), outputs=[self.bbox])
         with wp.ScopedTimer("spraying", active=self.active, synchronize=self.synchronize):
             self.deposit(wp.clone(state_in.body_q[self.ee_body_indices]), self.model.voxel_pos)
         with wp.ScopedTimer("adhesion check", active=self.active, synchronize=self.synchronize):
@@ -180,10 +184,12 @@ class SolverVoxel(SolverBase):
         with wp.ScopedTimer("drip", active=self.active, synchronize=self.synchronize):
             wp.capture_if(self.drip_cond, on_true=self.drip)
         self.update_rewards(rewards)
-        wp.launch(update_body_positions_kernel,
+        wp.launch(
+            update_body_positions_kernel,
             dim=state_in.body_q.shape,
             inputs=[state_in.body_q],
-            outputs=[state_out.body_q])
+            outputs=[state_out.body_q],
+        )
         # wp.launch(
         #     update_robot_position_kernel,
         #     dim=state_in.joint_q.shape,
@@ -269,6 +275,7 @@ class SolverVoxel(SolverBase):
                         self.model.voxel_dry,
                         self.model.voxel_load,
                         self.model.voxel_distance,
+                        self.bbox,
                         0,
                         self.shape[3] - 2,
                         wp.vec3i(0, 0, 1),
@@ -286,6 +293,7 @@ class SolverVoxel(SolverBase):
                         self.model.voxel_dry,
                         self.model.voxel_load,
                         self.model.voxel_distance,
+                        self.bbox,
                         -self.shape[2] + 2,
                         self.shape[2] - 2,
                         wp.vec3i(0, -1, 0),
@@ -303,6 +311,7 @@ class SolverVoxel(SolverBase):
                         self.model.voxel_dry,
                         self.model.voxel_load,
                         self.model.voxel_distance,
+                        self.bbox,
                         -self.shape[3] + 2,
                         self.shape[3] - 2,
                         wp.vec3i(0, 0, -1),
@@ -320,6 +329,7 @@ class SolverVoxel(SolverBase):
                         self.model.voxel_dry,
                         self.model.voxel_load,
                         self.model.voxel_distance,
+                        self.bbox,
                         0,
                         self.shape[1] - 2,
                         wp.vec3i(1, 0, 0),
@@ -337,6 +347,7 @@ class SolverVoxel(SolverBase):
                         self.model.voxel_dry,
                         self.model.voxel_load,
                         self.model.voxel_distance,
+                        self.bbox,
                         -self.shape[1] + 2,
                         self.shape[1] - 2,
                         wp.vec3i(-1, 0, 0),
@@ -354,6 +365,7 @@ class SolverVoxel(SolverBase):
                         self.model.voxel_dry,
                         self.model.voxel_load,
                         self.model.voxel_distance,
+                        self.bbox,
                         0,
                         self.shape[2] - 2,
                         wp.vec3i(0, 1, 0),
@@ -379,7 +391,13 @@ class SolverVoxel(SolverBase):
             wp.launch(
                 drop_down_kernel,
                 dim=(self.shape[0], self.shape[1], self.shape[2]),
-                inputs=[self.model.voxel_wet, self.model.voxel_dry, self.model.voxel_distance, self.model.voxel_load],
+                inputs=[
+                    self.model.voxel_wet,
+                    self.model.voxel_dry,
+                    self.model.voxel_distance,
+                    self.model.voxel_load,
+                    self.bbox,
+                ],
                 outputs=[rewards.adhesion_failure_amount],
             )
 
@@ -469,7 +487,14 @@ class SolverVoxel(SolverBase):
             wp.launch(
                 spray_backtrack_kernel,
                 dim=(self.shape[0], self.k, self.backtrack_count),
-                inputs=[self.positions, self.directions, self.speed_distribution, LINEAR_SPACING, self.ray_indices, self.h],
+                inputs=[
+                    self.positions,
+                    self.directions,
+                    self.speed_distribution,
+                    LINEAR_SPACING,
+                    self.ray_indices,
+                    self.h,
+                ],
                 outputs=[self.ray_trajectory],
             )
         with wp.ScopedTimer("spray rebound", active=self.active, synchronize=self.synchronize):
@@ -606,3 +631,13 @@ class SolverVoxel(SolverBase):
                     ],
                 )
             self.update_rebound_distances()
+        with wp.ScopedTimer("update bbox", active=self.active, synchronize=self.synchronize):
+            wp.launch(
+                update_bbox_kernel,
+                dim=(self.shape[0], self.k, self.backtrack_count),
+                inputs=[
+                    self.ray_trajectory,
+                    self.ray_rebound_trajectory,
+                ],
+                outputs=[self.bbox],
+            )
