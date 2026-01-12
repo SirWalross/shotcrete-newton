@@ -13,8 +13,23 @@ def update_cond_kernel(
 
 
 @wp.kernel
-def solidify_kernel(wet: wp.array4d(dtype=wp.float32), dry: wp.array4d(dtype=wp.float32), tc: wp.float32):
+def solidify_kernel(
+    wet: wp.array4d(dtype=wp.float32),
+    dry: wp.array4d(dtype=wp.float32),
+    tc: wp.float32,
+    bbox: wp.array2d(dtype=wp.int32),
+):
     widx, i, j, k = wp.tid()
+    if (
+        i < bbox[widx, 0] - 2
+        or i > bbox[widx, 3] + 2
+        or j < bbox[widx, 1] - 2
+        or j > bbox[widx, 4] + 2
+        or k < bbox[widx, 2] - 2
+        or k > bbox[widx, 5] + 2
+    ):
+        return
+
     w = wet[widx, i, j, k]
     d = dry[widx, i, j, k]
     w = relu(wp.min(w + d, 1.0) - d)
@@ -577,11 +592,11 @@ def spray_neighbours_kernel(
         return
     w = wp.float32(wet[widx, pos[0], pos[1], pos[2]])
     d = wp.float32(dry[widx, pos[0], pos[1], pos[2]])
-    
+
     if (w + d) >= 1.0:
         spray_neighbours[widx, i, j] = 0.0
         return
-    
+
     spray_neighbours[widx, i, j] = wp.float32(
         relu(1.0 - w - d)
         * wp.float32(
@@ -609,7 +624,7 @@ def spray_distribution_kernel(
     neighbour_count: wp.array2d(dtype=wp.float32),
 ):
     widx, i, j = wp.tid()
-    
+
     weight = spray_neighbours[widx, i, j]
     if weight <= 0.0:
         return
@@ -619,8 +634,7 @@ def spray_distribution_kernel(
         w = wp.float32(wet[widx, pos[0], pos[1], pos[2]])
         d = wp.float32(dry[widx, pos[0], pos[1], pos[2]])
         diff = wp.min(
-            (relu(remaining_mass[widx, i]) / (neighbour_count[widx, i] + 1.0))
-            * wp.float32(weight != 0.0),
+            (relu(remaining_mass[widx, i]) / (neighbour_count[widx, i] + 1.0)) * wp.float32(weight != 0.0),
             relu(1.0 - w - d),
         )
         wp.atomic_add(wet, widx, pos[0], pos[1], pos[2], diff)
@@ -734,6 +748,30 @@ def set_wall_kernel(
     widx, i, j = wp.tid()
     dry[indices[widx], i, dry.shape[2] - 1, j] = 10.0
     distance[indices[widx], i, dry.shape[2] - 1, j] = 0.0
+
+
+@wp.kernel
+def reset_global_bbox_kernel(global_bbox: wp.array2d(dtype=wp.int32), indices: wp.array(dtype=int)):
+    i = wp.tid()
+    idx = indices[i]
+    global_bbox[idx, 0] = 100000
+    global_bbox[idx, 1] = 100000
+    global_bbox[idx, 2] = 100000
+    global_bbox[idx, 3] = 0
+    global_bbox[idx, 4] = 0
+    global_bbox[idx, 5] = 0
+
+
+@wp.kernel
+def expand_global_bbox_kernel(global_bbox: wp.array2d(dtype=wp.int32), spray_bbox: wp.array2d(dtype=wp.int32)):
+    widx = wp.tid()
+
+    global_bbox[widx, 0] = wp.min(global_bbox[widx, 0], wp.min(spray_bbox[widx, 0], spray_bbox[widx, 6]))
+    global_bbox[widx, 1] = wp.min(global_bbox[widx, 1], wp.min(spray_bbox[widx, 1], spray_bbox[widx, 7]))
+    global_bbox[widx, 2] = wp.min(global_bbox[widx, 2], wp.min(spray_bbox[widx, 2], spray_bbox[widx, 8]))
+    global_bbox[widx, 3] = wp.max(global_bbox[widx, 3], wp.max(spray_bbox[widx, 3], spray_bbox[widx, 9]))
+    global_bbox[widx, 4] = wp.max(global_bbox[widx, 4], wp.max(spray_bbox[widx, 4], spray_bbox[widx, 10]))
+    global_bbox[widx, 5] = wp.max(global_bbox[widx, 5], wp.max(spray_bbox[widx, 5], spray_bbox[widx, 11]))
 
 
 @wp.kernel

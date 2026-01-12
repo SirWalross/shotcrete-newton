@@ -30,11 +30,13 @@ from .kernels import (
     capacity_propagation_kernel,
     drip_kernel,
     drop_down_kernel,
+    expand_global_bbox_kernel,
     failure_spread_kernel,
     initialize_load_kernel,
     out_of_bounds_spray_kernel,
     randomize_directions_kernel,
     reset_bbox_kernel,
+    reset_global_bbox_kernel,
     respreading_kernel,
     set_floor_kernel,
     set_wall_kernel,
@@ -165,7 +167,10 @@ class SolverVoxel(SolverBase):
         self.spray_neighbours = wp.zeros((self.shape[0], self.k, self.ball_indices.shape[0]), dtype=wp.float32)
         self.density = wp.zeros((self.shape[0], self.k), dtype=wp.float32)
         self.neighbour_count = wp.zeros((self.shape[0], self.k), dtype=wp.float32)
-        self.bbox = wp.zeros((self.shape[0], 12), dtype=wp.int32)
+        self.spray_bbox = wp.zeros((self.shape[0], 12), dtype=wp.int32)
+        self.global_bbox = wp.array(
+            np.tile(np.array([[100000, 100000, 100000, 0, 0, 0]]), (self.shape[0], 1)), dtype=wp.int32
+        )
 
     @override
     def step(
@@ -174,13 +179,15 @@ class SolverVoxel(SolverBase):
         wp.launch(
             update_cond_kernel, dim=1, inputs=[self.i, self.drip_vel], outputs=[self.drip_cond, self.adhesion_cond]
         )
-        wp.launch(reset_bbox_kernel, dim=(self.shape[0],), outputs=[self.bbox])
+        wp.launch(reset_bbox_kernel, dim=(self.shape[0],), outputs=[self.spray_bbox])
         with wp.ScopedTimer("spraying", active=self.active, synchronize=self.synchronize):
             self.deposit(wp.clone(state_in.body_q[self.ee_body_indices]), self.model.voxel_pos)
+        with wp.ScopedTimer("update global bbox", active=self.active, synchronize=self.synchronize):
+            wp.launch(expand_global_bbox_kernel, dim=(self.shape[0],), inputs=[self.spray_bbox, self.global_bbox])
         with wp.ScopedTimer("adhesion check", active=self.active, synchronize=self.synchronize):
             wp.capture_if(self.adhesion_cond, on_true=lambda: self.adhesion_check(rewards))
         with wp.ScopedTimer("solidify", active=self.active, synchronize=self.synchronize):
-            wp.launch(solidify_kernel, dim=self.shape, inputs=[self.model.voxel_wet, self.model.voxel_dry, self.tc])
+            wp.launch(solidify_kernel, dim=self.shape, inputs=[self.model.voxel_wet, self.model.voxel_dry, self.tc, self.global_bbox])
         with wp.ScopedTimer("drip", active=self.active, synchronize=self.synchronize):
             wp.capture_if(self.drip_cond, on_true=self.drip)
         self.update_rewards(rewards)
@@ -234,6 +241,7 @@ class SolverVoxel(SolverBase):
                 world_indices,
             ],
         )
+        wp.launch(reset_global_bbox_kernel, dim=(world_indices.shape[0],), inputs=[self.global_bbox, world_indices])
 
     def update_rewards(self, rewards: VoxelRewards):
         with wp.ScopedTimer("rewards", active=self.active, synchronize=self.synchronize):
@@ -275,7 +283,7 @@ class SolverVoxel(SolverBase):
                         self.model.voxel_dry,
                         self.model.voxel_load,
                         self.model.voxel_distance,
-                        self.bbox,
+                        self.spray_bbox,
                         0,
                         self.shape[3] - 2,
                         wp.vec3i(0, 0, 1),
@@ -293,7 +301,7 @@ class SolverVoxel(SolverBase):
                         self.model.voxel_dry,
                         self.model.voxel_load,
                         self.model.voxel_distance,
-                        self.bbox,
+                        self.spray_bbox,
                         -self.shape[2] + 2,
                         self.shape[2] - 2,
                         wp.vec3i(0, -1, 0),
@@ -311,7 +319,7 @@ class SolverVoxel(SolverBase):
                         self.model.voxel_dry,
                         self.model.voxel_load,
                         self.model.voxel_distance,
-                        self.bbox,
+                        self.spray_bbox,
                         -self.shape[3] + 2,
                         self.shape[3] - 2,
                         wp.vec3i(0, 0, -1),
@@ -329,7 +337,7 @@ class SolverVoxel(SolverBase):
                         self.model.voxel_dry,
                         self.model.voxel_load,
                         self.model.voxel_distance,
-                        self.bbox,
+                        self.spray_bbox,
                         0,
                         self.shape[1] - 2,
                         wp.vec3i(1, 0, 0),
@@ -347,7 +355,7 @@ class SolverVoxel(SolverBase):
                         self.model.voxel_dry,
                         self.model.voxel_load,
                         self.model.voxel_distance,
-                        self.bbox,
+                        self.spray_bbox,
                         -self.shape[1] + 2,
                         self.shape[1] - 2,
                         wp.vec3i(-1, 0, 0),
@@ -365,7 +373,7 @@ class SolverVoxel(SolverBase):
                         self.model.voxel_dry,
                         self.model.voxel_load,
                         self.model.voxel_distance,
-                        self.bbox,
+                        self.spray_bbox,
                         0,
                         self.shape[2] - 2,
                         wp.vec3i(0, 1, 0),
@@ -396,7 +404,7 @@ class SolverVoxel(SolverBase):
                     self.model.voxel_dry,
                     self.model.voxel_distance,
                     self.model.voxel_load,
-                    self.bbox,
+                    self.spray_bbox,
                 ],
                 outputs=[rewards.adhesion_failure_amount],
             )
@@ -639,5 +647,5 @@ class SolverVoxel(SolverBase):
                     self.ray_trajectory,
                     self.ray_rebound_trajectory,
                 ],
-                outputs=[self.bbox],
+                outputs=[self.spray_bbox],
             )

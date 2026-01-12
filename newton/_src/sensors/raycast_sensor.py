@@ -209,7 +209,7 @@ class RaycastSensor:
                 wp.array(self.camera_right, dtype=wp.vec3f),
                 self._scale,
                 self._resolution,
-                self.h
+                self.h,
             ],
             outputs=[self._depth_buffer],
             device=self.device,

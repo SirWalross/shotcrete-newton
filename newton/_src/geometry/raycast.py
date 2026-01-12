@@ -117,7 +117,14 @@ def raycast_sensor_kernel(
             wp.int32(wp.rint(ray_origin[1] + wp.float32(i) * ray_direction[1])),
             wp.int32(wp.rint(ray_origin[2] + wp.float32(i) * ray_direction[2])),
         )
-        if pos[0] < wet.shape[1] and pos[0] >= 0 and pos[1] < wet.shape[2] and pos[1] >= 0 and pos[2] < wet.shape[3] and pos[2] >= 0:
+        if (
+            pos[0] < wet.shape[1]
+            and pos[0] >= 0
+            and pos[1] < wet.shape[2]
+            and pos[1] >= 0
+            and pos[2] < wet.shape[3]
+            and pos[2] >= 0
+        ):
             w = wp.float32(wet[widx, pos[0], pos[1], pos[2]])
             d = wp.float32(dry[widx, pos[0], pos[1], pos[2]])
             if (w + d) > 0.5:

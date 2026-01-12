@@ -32,6 +32,7 @@ from constants import (
     Y,
     Z,
 )
+
 np.set_printoptions(threshold=sys.maxsize)
 
 from voxel_kernels import (
@@ -112,6 +113,7 @@ def get_circle_indices(radius):
 
     return indices
 
+
 wp.init()
 
 print(wp.config.kernel_cache_dir)
@@ -126,8 +128,8 @@ class Voxel:
         dry = np.zeros((X + 2, Y + 2, Z + 2), dtype=np.float32)
         dry[:, :, :7] = 10.0
         distance[:, :, :7] = 0.0
-        dry[:, Y - 5:, :] = 10.0
-        distance[:, Y - 5:, :] = 0.0
+        dry[:, Y - 5 :, :] = 10.0
+        distance[:, Y - 5 :, :] = 0.0
         self.dry = wp.array(dry, dtype=wp.float32)
         self.distance = wp.array(distance, dtype=wp.float32)
 
@@ -227,6 +229,7 @@ class Voxel:
                     dim=(K, BALL_COUNT),
                     inputs=[self.wet, self.dry, self.distance, self.ball_indices, self.ray_rebound_trajectory[:, 0]],
                 )
+
     def update_distances(self):
         with wp.ScopedTimer("update distances", active=self.active, synchronize=self.synchronize):
             for _ in range(5):
@@ -260,7 +263,7 @@ class Voxel:
                 ],
                 outputs=[ray_indices],
             )
-            if RESPREADING:# and self.i == 80:
+            if RESPREADING:  # and self.i == 80:
                 avg_ray_index = wp.zeros(1, dtype=wp.int32)
                 wp.launch(kernel=sum_kernel, dim=(K,), inputs=[ray_indices, avg_ray_index])
                 # print(avg_ray_index)
@@ -455,7 +458,7 @@ class Voxel:
                 self.adhesion_check()
         if SOLIDIFY:
             with wp.ScopedTimer("solidify", active=self.active, synchronize=self.synchronize):
-                    wp.launch(solidify_kernel, dim=(X, Y, Z), inputs=[self.wet, self.dry, TC])
+                wp.launch(solidify_kernel, dim=(X, Y, Z), inputs=[self.wet, self.dry, TC])
         if self.i % L == 0 and DRIP:
             with wp.ScopedTimer("drip", active=self.active, synchronize=self.synchronize):
                 for z in range(Z + 1):
