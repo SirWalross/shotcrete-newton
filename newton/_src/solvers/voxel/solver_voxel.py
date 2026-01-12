@@ -249,18 +249,20 @@ class SolverVoxel(SolverBase):
 
     def update_rewards(self, rewards: VoxelRewards):
         with wp.ScopedTimer("rewards", active=self.active, synchronize=self.synchronize):
-            wp.launch(
-                spray_reward_kernel,
-                dim=(self.shape[0], self.shape[1] - 2, self.shape[3] - 2),
-                inputs=[self.model.voxel_wet, self.model.voxel_dry, self.h, rewards.decimation],
-                outputs=[rewards.distance, rewards.smoothness, rewards.air_gap],
-            )
-            wp.launch(
-                out_of_bounds_spray_kernel,
-                dim=(self.shape[0], self.k),
-                inputs=[self.model.voxel_wet, self.ray_trajectory],
-                outputs=[rewards.out_of_bounds_spray],
-            )
+            with wp.ScopedTimer("spray reward calculation", active=self.active, synchronize=self.synchronize):
+                wp.launch(
+                    spray_reward_kernel,
+                    dim=(self.shape[0], self.shape[1] - 2, self.shape[3] - 2),
+                    inputs=[self.model.voxel_wet, self.model.voxel_dry, self.h, rewards.decimation, self.global_bbox],
+                    outputs=[rewards.distance, rewards.smoothness, rewards.air_gap],
+                )
+            with wp.ScopedTimer("out of bounds spray calculation", active=self.active, synchronize=self.synchronize):
+                wp.launch(
+                    out_of_bounds_spray_kernel,
+                    dim=(self.shape[0], self.k),
+                    inputs=[self.model.voxel_wet, self.ray_trajectory],
+                    outputs=[rewards.out_of_bounds_spray],
+                )
 
     def drip(self):
         wp.launch(
