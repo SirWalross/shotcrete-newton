@@ -574,22 +574,28 @@ def spray_neighbours_kernel(
         voxels[widx, i][2] + ball_indices[j][2],
     )
     if valid_pos(pos, wet.shape):
-        w = wp.float32(wet[widx, pos[0], pos[1], pos[2]])
-        d = wp.float32(dry[widx, pos[0], pos[1], pos[2]])
-        spray_neighbours[widx, i, j] = wp.float32(
-            relu(1.0 - w - d)
-            * wp.float32(
-                ((dry[widx, pos[0] + 1, pos[1], pos[2]] + wet[widx, pos[0] + 1, pos[1], pos[2]]) > 0.5)
-                or ((dry[widx, pos[0] - 1, pos[1], pos[2]] + wet[widx, pos[0] - 1, pos[1], pos[2]]) > 0.5)
-                or ((dry[widx, pos[0], pos[1] + 1, pos[2]] + wet[widx, pos[0], pos[1] + 1, pos[2]]) > 0.5)
-                or ((dry[widx, pos[0], pos[1] - 1, pos[2]] + wet[widx, pos[0], pos[1] - 1, pos[2]]) > 0.5)
-                or ((dry[widx, pos[0], pos[1], pos[2] + 1] + wet[widx, pos[0], pos[1], pos[2] + 1]) > 0.5)
-                or ((dry[widx, pos[0], pos[1], pos[2] - 1] + wet[widx, pos[0], pos[1], pos[2] - 1]) > 0.5)
-                or (w + d) > 0.5
-            )
+        return
+    w = wp.float32(wet[widx, pos[0], pos[1], pos[2]])
+    d = wp.float32(dry[widx, pos[0], pos[1], pos[2]])
+    
+    if (w + d) >= 1.0:
+        spray_neighbours[widx, i, j] = 0.0
+        return
+    
+    spray_neighbours[widx, i, j] = wp.float32(
+        relu(1.0 - w - d)
+        * wp.float32(
+            ((dry[widx, pos[0] + 1, pos[1], pos[2]] + wet[widx, pos[0] + 1, pos[1], pos[2]]) > 0.5)
+            or ((dry[widx, pos[0] - 1, pos[1], pos[2]] + wet[widx, pos[0] - 1, pos[1], pos[2]]) > 0.5)
+            or ((dry[widx, pos[0], pos[1] + 1, pos[2]] + wet[widx, pos[0], pos[1] + 1, pos[2]]) > 0.5)
+            or ((dry[widx, pos[0], pos[1] - 1, pos[2]] + wet[widx, pos[0], pos[1] - 1, pos[2]]) > 0.5)
+            or ((dry[widx, pos[0], pos[1], pos[2] + 1] + wet[widx, pos[0], pos[1], pos[2] + 1]) > 0.5)
+            or ((dry[widx, pos[0], pos[1], pos[2] - 1] + wet[widx, pos[0], pos[1], pos[2] - 1]) > 0.5)
+            or (w + d) > 0.5
         )
-        wp.atomic_add(density, widx, i, spray_neighbours[widx, i, j])
-        wp.atomic_add(neighbour_count, widx, i, wp.float32(spray_neighbours[widx, i, j] != 0.0))
+    )
+    wp.atomic_add(density, widx, i, spray_neighbours[widx, i, j])
+    wp.atomic_add(neighbour_count, widx, i, wp.float32(spray_neighbours[widx, i, j] != 0.0))
 
 
 @wp.kernel
@@ -603,6 +609,10 @@ def spray_distribution_kernel(
     neighbour_count: wp.array2d(dtype=wp.float32),
 ):
     widx, i, j = wp.tid()
+    
+    weight = spray_neighbours[widx, i, j]
+    if weight <= 0.0:
+        return
 
     pos = voxels[widx, i] + ball_indices[j]
     if valid_pos(pos, wet.shape):
@@ -610,7 +620,7 @@ def spray_distribution_kernel(
         d = wp.float32(dry[widx, pos[0], pos[1], pos[2]])
         diff = wp.min(
             (relu(remaining_mass[widx, i]) / (neighbour_count[widx, i] + 1.0))
-            * wp.float32(spray_neighbours[widx, i, j] != 0.0),
+            * wp.float32(weight != 0.0),
             relu(1.0 - w - d),
         )
         wp.atomic_add(wet, widx, pos[0], pos[1], pos[2], diff)
