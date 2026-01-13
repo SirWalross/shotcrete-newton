@@ -387,8 +387,15 @@ def spray_trajectory_kernel(
 
 
 @wp.func
-def valid_pos(pos: wp.vec3i, shape: wp._src.types.shape_t) -> bool:
-    return pos[0] < shape[1] and pos[0] >= 0 and pos[1] < shape[2] and pos[1] >= 0 and pos[2] < shape[3] and pos[2] >= 0
+def valid_pos(pos: wp.vec3i, shape: wp._src.types.shape_t, tolerance: int = 0) -> bool:
+    return (
+        pos[0] < shape[1] - tolerance
+        and pos[0] >= tolerance
+        and pos[1] < shape[2] - tolerance
+        and pos[1] >= tolerance
+        and pos[2] < shape[3] - tolerance
+        and pos[2] >= tolerance
+    )
 
 
 @wp.kernel
@@ -446,7 +453,7 @@ def spray_rebound_kernel(
     directions: wp.array2d(dtype=wp.vec3f),
 ):
     widx, i = wp.tid()
-    if valid_pos(ray_hit_pos[widx, i], wet.shape):
+    if valid_pos(ray_hit_pos[widx, i], wet.shape, 1):
         n = wp.normalize(
             wp.vec3f(
                 wp.float32(
