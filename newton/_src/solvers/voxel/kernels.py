@@ -152,28 +152,30 @@ def drop_down_kernel(
 
 @wp.func
 def in_bbox(bbox: wp.array(dtype=wp.int32), i: wp.vec3i):
+    # FIX: Logic corrected to return True if INSIDE the bbox (plus padding)
     return (
-        ((bbox[0] - 10) > i[0])
-        and ((bbox[1] - 10) > i[1])
-        and ((bbox[2] - 10) > i[2])
-        and ((bbox[3] + 10) < i[0])
-        and ((bbox[4] + 10) < i[1])
-        and ((bbox[5] + 10) < i[2])
+        (i[0] >= bbox[0] - 10)
+        and (i[1] >= bbox[1] - 10)
+        and (i[2] >= bbox[2] - 10)
+        and (i[0] <= bbox[3] + 10)
+        and (i[1] <= bbox[4] + 10)
+        and (i[2] <= bbox[5] + 10)
     ) or (
-        ((bbox[6] - 10) > i[0])
-        and ((bbox[7] - 10) > i[1])
-        and ((bbox[8] - 10) > i[2])
-        and ((bbox[9] + 10) < i[0])
-        and ((bbox[10] + 10) < i[1])
-        and ((bbox[11] + 10) < i[2])
+        (i[0] >= bbox[6] - 10)
+        and (i[1] >= bbox[7] - 10)
+        and (i[2] >= bbox[8] - 10)
+        and (i[0] <= bbox[9] + 10)
+        and (i[1] <= bbox[10] + 10)
+        and (i[2] <= bbox[11] + 10)
     )
 
 
 @wp.func
 def in_bbox_all_height(bbox: wp.array(dtype=wp.int32), i: wp.vec3i):
+    # FIX: Logic corrected to return True if INSIDE the bbox (X/Y only)
     return (
-        ((bbox[0] - 10) > i[0]) and ((bbox[1] - 10) > i[1]) and ((bbox[3] + 10) < i[0]) and ((bbox[4] + 10) < i[1])
-    ) or (((bbox[6] - 10) > i[0]) and ((bbox[7] - 10) > i[1]) and ((bbox[9] + 10) < i[0]) and ((bbox[10] + 10) < i[1]))
+        (i[0] >= bbox[0] - 10) and (i[1] >= bbox[1] - 10) and (i[0] <= bbox[3] + 10) and (i[1] <= bbox[4] + 10)
+    ) or ((i[0] >= bbox[6] - 10) and (i[1] >= bbox[7] - 10) and (i[0] <= bbox[9] + 10) and (i[1] <= bbox[10] + 10))
 
 
 @wp.kernel
