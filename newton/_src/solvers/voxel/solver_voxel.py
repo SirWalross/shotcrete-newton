@@ -176,49 +176,50 @@ class SolverVoxel(SolverBase):
     def step(
         self, state_in: State, state_out: State, control: Control, contacts: Contacts, rewards: VoxelRewards, dt: float
     ):
-        wp.launch(
-            update_cond_kernel, dim=1, inputs=[self.i, self.drip_vel], outputs=[self.drip_cond, self.adhesion_cond]
-        )
-        wp.launch(reset_bbox_kernel, dim=(self.shape[0],), outputs=[self.spray_bbox])
-        with wp.ScopedTimer("spraying", active=self.active, synchronize=self.synchronize):
-            self.deposit(wp.clone(state_in.body_q[self.ee_body_indices]), self.model.voxel_pos)
-        with wp.ScopedTimer("update global bbox", active=self.active, synchronize=self.synchronize):
-            wp.launch(expand_global_bbox_kernel, dim=(self.shape[0],), inputs=[self.spray_bbox, self.global_bbox])
-        with wp.ScopedTimer("adhesion check", active=self.active, synchronize=self.synchronize):
-            wp.capture_if(self.adhesion_cond, on_true=lambda: self.adhesion_check(rewards))
-        with wp.ScopedTimer("solidify", active=self.active, synchronize=self.synchronize):
+        with wp.ScopedTimer("step", active=self.active, synchronize=self.synchronize):
             wp.launch(
-                solidify_kernel,
-                dim=self.shape,
-                inputs=[self.model.voxel_wet, self.model.voxel_dry, self.tc, self.global_bbox],
+                update_cond_kernel, dim=1, inputs=[self.i, self.drip_vel], outputs=[self.drip_cond, self.adhesion_cond]
             )
-        with wp.ScopedTimer("drip", active=self.active, synchronize=self.synchronize):
-            wp.capture_if(self.drip_cond, on_true=self.drip)
-        self.update_rewards(rewards)
-        wp.launch(
-            update_body_positions_kernel,
-            dim=state_in.body_q.shape,
-            inputs=[state_in.body_q],
-            outputs=[state_out.body_q],
-        )
-        # wp.launch(
-        #     update_robot_position_kernel,
-        #     dim=state_in.joint_q.shape,
-        #     inputs=[
-        #         state_in.joint_q,
-        #         state_in.joint_qd,
-        #         state_in.joint_q.shape[0] // self.model.num_worlds,
-        #         self.model.joint_velocity_limit,
-        #         control.joint_target_pos,
-        #         control.joint_target_vel,
-        #         dt,
-        #     ],
-        #     outputs=[
-        #         state_out.joint_q,
-        #         state_out.joint_qd,
-        #     ],
-        # )
-        # newton.eval_fk(self.model, state_out.joint_q, state_out.joint_qd, state_out)
+            wp.launch(reset_bbox_kernel, dim=(self.shape[0],), outputs=[self.spray_bbox])
+            with wp.ScopedTimer("spraying", active=self.active, synchronize=self.synchronize):
+                self.deposit(wp.clone(state_in.body_q[self.ee_body_indices]), self.model.voxel_pos)
+            with wp.ScopedTimer("update global bbox", active=self.active, synchronize=self.synchronize):
+                wp.launch(expand_global_bbox_kernel, dim=(self.shape[0],), inputs=[self.spray_bbox, self.global_bbox])
+            with wp.ScopedTimer("adhesion check", active=self.active, synchronize=self.synchronize):
+                wp.capture_if(self.adhesion_cond, on_true=lambda: self.adhesion_check(rewards))
+            with wp.ScopedTimer("solidify", active=self.active, synchronize=self.synchronize):
+                wp.launch(
+                    solidify_kernel,
+                    dim=self.shape,
+                    inputs=[self.model.voxel_wet, self.model.voxel_dry, self.tc, self.global_bbox],
+                )
+            with wp.ScopedTimer("drip", active=self.active, synchronize=self.synchronize):
+                wp.capture_if(self.drip_cond, on_true=self.drip)
+            self.update_rewards(rewards)
+            wp.launch(
+                update_body_positions_kernel,
+                dim=state_in.body_q.shape,
+                inputs=[state_in.body_q],
+                outputs=[state_out.body_q],
+            )
+            # wp.launch(
+            #     update_robot_position_kernel,
+            #     dim=state_in.joint_q.shape,
+            #     inputs=[
+            #         state_in.joint_q,
+            #         state_in.joint_qd,
+            #         state_in.joint_q.shape[0] // self.model.num_worlds,
+            #         self.model.joint_velocity_limit,
+            #         control.joint_target_pos,
+            #         control.joint_target_vel,
+            #         dt,
+            #     ],
+            #     outputs=[
+            #         state_out.joint_q,
+            #         state_out.joint_qd,
+            #     ],
+            # )
+            # newton.eval_fk(self.model, state_out.joint_q, state_out.joint_qd, state_out)
         return state_out
 
     @override
