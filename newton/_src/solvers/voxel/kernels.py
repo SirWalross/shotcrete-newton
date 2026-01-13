@@ -831,12 +831,13 @@ def update_bbox_kernel(
     wp.atomic_max(bbox, widx, 3, ray_traj[widx, i, k][0])
     wp.atomic_max(bbox, widx, 4, ray_traj[widx, i, k][1])
     wp.atomic_max(bbox, widx, 5, ray_traj[widx, i, k][2])
-    wp.atomic_min(bbox, widx, 6, rebound_ray_traj[widx, i, k][0])
-    wp.atomic_min(bbox, widx, 7, rebound_ray_traj[widx, i, k][1])
-    wp.atomic_min(bbox, widx, 8, rebound_ray_traj[widx, i, k][2])
-    wp.atomic_max(bbox, widx, 9, rebound_ray_traj[widx, i, k][0])
-    wp.atomic_max(bbox, widx, 10, rebound_ray_traj[widx, i, k][1])
-    wp.atomic_max(bbox, widx, 11, rebound_ray_traj[widx, i, k][2])
+    if k == 0:
+        wp.atomic_min(bbox, widx, 6, rebound_ray_traj[widx, i, k][0])
+        wp.atomic_min(bbox, widx, 7, rebound_ray_traj[widx, i, k][1])
+        wp.atomic_min(bbox, widx, 8, rebound_ray_traj[widx, i, k][2])
+        wp.atomic_max(bbox, widx, 9, rebound_ray_traj[widx, i, k][0])
+        wp.atomic_max(bbox, widx, 10, rebound_ray_traj[widx, i, k][1])
+        wp.atomic_max(bbox, widx, 11, rebound_ray_traj[widx, i, k][2])
 
 
 @wp.kernel
