@@ -126,10 +126,10 @@ def drop_down_kernel(
     widx, i, j = wp.tid()
     write_pos = wp.int32(1)
     z_dim = wet.shape[3]
-    if not in_bbox_all_height(bbox, wp.vec3i(i, j, 0)):
+    if not in_bbox_all_height(bbox[widx], wp.vec3i(i, j, 0)):
         return
     for k in range(z_dim):
-        if not in_bbox(bbox, wp.vec3i(i, j, k)):
+        if not in_bbox(bbox[widx], wp.vec3i(i, j, k)):
             continue
         if current_load[widx, i, j, k] < 0:
             w = wet[widx, i, j, k]
