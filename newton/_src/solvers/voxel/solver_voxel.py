@@ -184,7 +184,7 @@ class SolverVoxel(SolverBase):
             with wp.ScopedTimer("spraying", active=self.active, synchronize=self.synchronize):
                 self.deposit(wp.clone(state_in.body_q[self.ee_body_indices]), self.model.voxel_pos)
             with wp.ScopedTimer("update global bbox", active=self.active, synchronize=self.synchronize):
-                wp.launch(expand_global_bbox_kernel, dim=(self.shape[0],), inputs=[self.spray_bbox, self.global_bbox])
+                wp.launch(expand_global_bbox_kernel, dim=(self.shape[0],), inputs=[self.global_bbox, self.spray_bbox])
             with wp.ScopedTimer("adhesion check", active=self.active, synchronize=self.synchronize):
                 wp.capture_if(self.adhesion_cond, on_true=lambda: self.adhesion_check(rewards))
             with wp.ScopedTimer("solidify", active=self.active, synchronize=self.synchronize):
