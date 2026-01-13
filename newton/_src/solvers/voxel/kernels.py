@@ -599,7 +599,7 @@ def spray_neighbours_kernel(
         voxels[widx, i][1] + ball_indices[j][1],
         voxels[widx, i][2] + ball_indices[j][2],
     )
-    if valid_pos(pos, wet.shape):
+    if not valid_pos(pos, wet.shape, 1):
         return
     w = wp.float32(wet[widx, pos[0], pos[1], pos[2]])
     d = wp.float32(dry[widx, pos[0], pos[1], pos[2]])
