@@ -448,7 +448,8 @@ def spray_rebound_kernel(
     ray_dir: wp.array2d(dtype=wp.vec3),
     ray_index: wp.array2d(dtype=wp.int32),
     velocities: wp.array(dtype=wp.float32),
-    droplet_mass: wp.float32,
+    droplet_mass: wp.array2d(dtype=wp.float32),
+    total_droplet_mass: wp.float32,
     linear_spacing: wp.float32,
     h: wp.float32,
     rebound_amount: wp.array2d(dtype=wp.float32),
@@ -507,12 +508,13 @@ def spray_rebound_kernel(
         v = wp.normalize(ray_dir[widx, i] * velocities[i] + wp.vec3f(0.0, 0.0, -9.81) * t)
 
         # calculate spraying factors that influence rebound
-        angle = wp.acos(-wp.dot(v, n))
-        distance = wp.length(wp.vec3f(ray_hit_pos[widx, i]) - wp.vec3f(ray_pos[widx, i])) * h + 1.2
+        angle = wp.acos(-wp.dot(v, -n))
+        distance = wp.length(wp.vec3f(ray_hit_pos[widx, i]) - wp.vec3f(ray_pos[widx, i])) * h
 
         # calculate rebound rate
-        rate = wp.min(0.1 + 0.8 * wp.abs(wp.sin(angle)) + 0.5 * (1.2 - distance) * (1.2 - distance), 1.0)
-        rebound_amount[widx, i] = rate * droplet_mass
+        rate = wp.min(0.1 + 0.01 * wp.abs(wp.sin(angle)) + 0.2 * (1.2 - distance) * (1.2 - distance), 1.0)
+        rebound_amount[widx, i] = rate * total_droplet_mass
+        droplet_mass[widx, i] = droplet_mass[widx, i] - rate * total_droplet_mass
         directions[widx, i] = v - 2.0 * wp.dot(v, n) * n
 
 
@@ -759,7 +761,9 @@ def set_floor_kernel(
 ):
     widx, i, j = wp.tid()
     dry[indices[widx], i, j, 0] = 10.0
+    dry[indices[widx], i, j, 1] = 10.0
     distance[indices[widx], i, j, 0] = 0.0
+    distance[indices[widx], i, j, 1] = 0.0
 
 
 @wp.kernel
@@ -770,7 +774,9 @@ def set_wall_kernel(
 ):
     widx, i, j = wp.tid()
     dry[indices[widx], i, dry.shape[2] - 1, j] = 10.0
+    dry[indices[widx], i, dry.shape[2] - 2, j] = 10.0
     distance[indices[widx], i, dry.shape[2] - 1, j] = 0.0
+    distance[indices[widx], i, dry.shape[2] - 2, j] = 0.0
 
 
 @wp.kernel

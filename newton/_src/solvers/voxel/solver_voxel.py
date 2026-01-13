@@ -524,6 +524,7 @@ class SolverVoxel(SolverBase):
                     self.directions,
                     self.ray_indices,
                     self.speed_distribution,
+                    self.droplet_mass,
                     self.total_droplet_mass,
                     LINEAR_SPACING,
                     self.h,
