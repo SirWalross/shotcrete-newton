@@ -48,7 +48,7 @@ def update_distances_kernel(
 ):
     widx, i, j = wp.tid()
     pos = positions[widx, i] + indices[j]
-    if valid_pos(pos, wet.shape):
+    if valid_pos(pos, wet.shape, 1):
         wp.atomic_min(
             distances,
             widx,
