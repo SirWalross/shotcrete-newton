@@ -733,6 +733,8 @@ def spray_reward_kernel(
     hit = wp.bool(False)
 
     if i < bbox[widx, 0] - 2 or i > bbox[widx, 3] + 2 or k < bbox[widx, 2] - 2 or k > bbox[widx, 5] + 2:
+        wp.atomic_add(height, widx, i // decimation, k // decimation, wp.float32(wet.shape[2] - 1) * h)
+        wp.atomic_add(height_sq, widx, i // decimation, k // decimation, wp.float32(wet.shape[2] - 1) * h * wp.float32(wet.shape[2] - 1) * h)
         return
 
     local_gap = wp.float32(0.0)
