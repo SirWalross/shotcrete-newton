@@ -93,7 +93,7 @@ class SolverVoxel(SolverBase):
         s: int = 9,
         backtrack_count: int = 10,
         h: float = 0.005,
-        tc: float = 50.0,
+        tc: int = 5,
         k: int = 300,
         droplet_mass: float = 1.0 / 6.0,
         spray_velocity: float = 20.0,

@@ -1,11 +1,20 @@
 import warp as wp
 
-from .utils import is_full, min_six_way, relu, saturating_add, saturating_add_4, saturating_sub, total_density_is_smaller
+from .utils import (
+    is_full,
+    min_six_way,
+    overflow_part,
+    relu,
+    saturating_add,
+    saturating_add_4,
+    saturating_sub,
+    total_density_is_smaller,
+)
 
 SPRAY_COUNT = 1000
 U8_ZERO = wp.uint8(0)
-U8_ONE  = wp.uint8(1)
-U8_MAX  = wp.uint8(255)
+U8_ONE = wp.uint8(1)
+U8_MAX = wp.uint8(255)
 DENSITY_ZERO = wp.uint8(0)
 DENSITY_10_PERCENT = wp.uint8(25)
 DENSITY_HALF = wp.uint8(128)
@@ -31,7 +40,7 @@ def update_cond_kernel(
 def solidify_kernel(
     wet: wp.array4d(dtype=wp.uint8),
     dry: wp.array4d(dtype=wp.uint8),
-    tc: wp.float32,
+    tc: wp.uint8,
     bbox: wp.array2d(dtype=wp.int32),
 ):
     widx, i, j, k = wp.tid()
@@ -47,10 +56,13 @@ def solidify_kernel(
 
     w = wet[widx, i, j, k]
     d = dry[widx, i, j, k]
-    # FIXME
-    w = relu(wp.min(w + d, 255) - d)
-    diff = wp.min(w, wp.float32(1.0) / tc)
-    wet[widx, i, j, k] = relu(w - diff - wp.max(0.0, w + d - 1.0))
+
+    # calculate part that solidifes
+    w = saturating_add(w, d) - d
+    diff = wp.min(w, tc)
+
+    # account for if (w + d) > DENSITY_MAX
+    wet[widx, i, j, k] = saturating_sub(w - diff, overflow_part(w, d))
     dry[widx, i, j, k] = d + diff
 
 
@@ -72,7 +84,9 @@ def update_distances_kernel(
             pos[1],
             pos[2],
             wp.where(
-                total_density_is_smaller(wet[widx, pos[0], pos[1], pos[2]], dry[widx, pos[0], pos[1], pos[2]], DENSITY_10_PERCENT),
+                total_density_is_smaller(
+                    wet[widx, pos[0], pos[1], pos[2]], dry[widx, pos[0], pos[1], pos[2]], DENSITY_10_PERCENT
+                ),
                 DISTANCE_MAX,
                 min_six_way(
                     distance[widx, pos[0] + 1, pos[1], pos[2]] + 2,
@@ -93,7 +107,9 @@ def initialize_load_kernel(
     widx, i, j, k = wp.tid()
     d = wp.int16(dry[widx, i, j, k])
     density = wp.int16(wet[widx, i, j, k]) + d
-    current_load[widx, i, j, k] = wp.where(density == DISTANCE_WALL, LOAD_MAX, wp.where(density > wp.int16(DENSITY_HALF), -density, wp.int16(DENSITY_ZERO)))
+    current_load[widx, i, j, k] = wp.where(
+        density == DISTANCE_WALL, LOAD_MAX, wp.where(density > wp.int16(DENSITY_HALF), -density, wp.int16(DENSITY_ZERO))
+    )
 
 
 @wp.func
@@ -153,7 +169,9 @@ def drop_down_kernel(
             dry[widx, i, j, k] = DENSITY_ZERO
             distance[widx, i, j, k] = DISTANCE_MAX
             wet[widx, i, j, write_pos] = saturating_add(w, d)
-            wp.atomic_add(adhesion_failure_amount, widx, wp.float32(w) / DENSITY_MAX_F32 + wp.float32(d) / DENSITY_MAX_F32)
+            wp.atomic_add(
+                adhesion_failure_amount, widx, wp.float32(w) / DENSITY_MAX_F32 + wp.float32(d) / DENSITY_MAX_F32
+            )
 
             # Distance propagation
             distance[widx, i, j, write_pos] = distance[widx, i, j, write_pos - 1] + wp.int16(1)
@@ -247,7 +265,9 @@ def capacity_propagation_kernel(
 
                     num_neighbours = wp.max(1.0, wp.float32(n1) + wp.float32(n2) + wp.float32(n3) + wp.float32(n4))
 
-                new_val = wp.min(load / num_neighbours, strength(w, d, direction, wsp, cs, ss, as_)) - (wd + dd) / wp.int16(10)
+                new_val = wp.min(load / num_neighbours, strength(w, d, direction, wsp, cs, ss, as_)) - (
+                    wd + dd
+                ) / wp.int16(10)
 
                 current_load[widx, other[0], other[1], other[2]] = wp.max(
                     current_load[widx, other[0], other[1], other[2]], new_val
@@ -265,7 +285,9 @@ def failure_spread_kernel(
     widx, i, j = wp.tid()
     pos = positions[widx, i] + indices[j]
     if valid_pos(pos, wet.shape):
-        if not total_density_is_smaller(wet[widx, pos[0], pos[1], pos[2]], dry[widx, pos[0], pos[1], pos[2]], DENSITY_HALF):
+        if not total_density_is_smaller(
+            wet[widx, pos[0], pos[1], pos[2]], dry[widx, pos[0], pos[1], pos[2]], DENSITY_HALF
+        ):
             dist = wp.int16((1.0 - 0.5 * wp.length(wp.vec3f(indices[j]))) * 25.0)
             wp.atomic_sub(
                 current_load,
@@ -606,7 +628,7 @@ def spray_neighbours_kernel(
         return
 
     spray_neighbours[widx, i, j] = wp.float32(
-        relu(DENSITY_MAX - saturating_add(w, d))
+        (DENSITY_MAX - saturating_add(w, d))
         * wp.float32(
             not total_density_is_smaller(
                 dry[widx, pos[0] + 1, pos[1], pos[2]], wet[widx, pos[0] + 1, pos[1], pos[2]], DENSITY_HALF
