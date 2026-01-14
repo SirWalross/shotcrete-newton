@@ -14,7 +14,7 @@ def min_six_way(a: wp.uint8, b: wp.uint8, c: wp.uint8, d: wp.uint8, e: wp.uint8,
 @wp.func
 def saturating_add(a: wp.uint8, b: wp.uint8):
     total = a + b
-    return wp.select(total < a, total, wp.uint8(255))
+    return wp.where(total >= a, total, wp.uint8(255))
 
 
 @wp.func
