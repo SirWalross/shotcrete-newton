@@ -232,6 +232,7 @@ class SolverVoxel(SolverBase):
             set_floor_kernel,
             dim=(world_indices.shape[0], self.shape[1], self.shape[2]),
             inputs=[
+                self.model.voxel_wet,
                 self.model.voxel_dry,
                 self.model.voxel_distance,
                 world_indices,
@@ -241,6 +242,7 @@ class SolverVoxel(SolverBase):
             set_wall_kernel,
             dim=(world_indices.shape[0], self.shape[1], self.shape[3]),
             inputs=[
+                self.model.voxel_wet,
                 self.model.voxel_dry,
                 self.model.voxel_distance,
                 world_indices,
