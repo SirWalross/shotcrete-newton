@@ -77,24 +77,20 @@ def update_distances_kernel(
     widx, i, j = wp.tid()
     pos = positions[widx, i] + indices[j]
     if valid_pos(pos, wet.shape, 1):
-        wp.atomic_min(
-            distance,
-            widx,
-            pos[0],
-            pos[1],
-            pos[2],
+        distance[widx, pos[0], pos[1], pos[2]] = wp.min(
+            distance[widx, pos[0], pos[1], pos[2]],
             wp.where(
                 total_density_is_smaller(
                     wet[widx, pos[0], pos[1], pos[2]], dry[widx, pos[0], pos[1], pos[2]], DENSITY_10_PERCENT
                 ),
                 DISTANCE_MAX,
                 min_six_way(
-                    distance[widx, pos[0] + 1, pos[1], pos[2]] + 2,
-                    distance[widx, pos[0] - 1, pos[1], pos[2]] + 2,
-                    distance[widx, pos[0], pos[1] + 1, pos[2]] + 2,
-                    distance[widx, pos[0], pos[1] - 1, pos[2]] + 2,
-                    distance[widx, pos[0], pos[1], pos[2] + 1] + 5,
-                    distance[widx, pos[0], pos[1], pos[2] - 1] + 1,
+                    distance[widx, pos[0] + 1, pos[1], pos[2]] + wp.uint8(2),
+                    distance[widx, pos[0] - 1, pos[1], pos[2]] + wp.uint8(2),
+                    distance[widx, pos[0], pos[1] + 1, pos[2]] + wp.uint8(2),
+                    distance[widx, pos[0], pos[1] - 1, pos[2]] + wp.uint8(2),
+                    distance[widx, pos[0], pos[1], pos[2] + 1] + wp.uint8(5),
+                    distance[widx, pos[0], pos[1], pos[2] - 1] + wp.uint8(1),
                 ),
             ),
         )
@@ -174,7 +170,7 @@ def drop_down_kernel(
             )
 
             # Distance propagation
-            distance[widx, i, j, write_pos] = distance[widx, i, j, write_pos - 1] + wp.int16(1)
+            distance[widx, i, j, write_pos] = saturating_add(distance[widx, i, j, write_pos - 1], wp.uint8(1))
 
             write_pos += 1
         elif not total_density_is_smaller(wet[widx, i, j, k], dry[widx, i, j, k], DENSITY_HALF):
@@ -217,10 +213,10 @@ def capacity_propagation_kernel(
     offset: wp.int32,
     length: wp.int32,
     direction: wp.vec3i,
-    wsp: wp.float32,
-    cs: wp.float32,
-    ss: wp.float32,
-    as_: wp.float32,
+    wsp: wp.int16,
+    cs: wp.int16,
+    ss: wp.int16,
+    as_: wp.int16,
 ):
     widx, i, j, k = wp.tid()
     for l in range(length):
@@ -240,7 +236,7 @@ def capacity_propagation_kernel(
                 d = dry[widx, indices[0], indices[1], indices[2]]
                 load = current_load[widx, indices[0], indices[1], indices[2]]
 
-                num_neighbours = wp.float32(1.0)
+                num_neighbours = wp.int16(1)
                 if direction[2] == 0:
                     n1 = distance[widx, indices[0] + 1, indices[1], indices[2]] > dist and not total_density_is_smaller(
                         wet[widx, indices[0] + 1, indices[1], indices[2]],
@@ -263,7 +259,9 @@ def capacity_propagation_kernel(
                         DENSITY_HALF,
                     )
 
-                    num_neighbours = wp.max(1.0, wp.float32(n1) + wp.float32(n2) + wp.float32(n3) + wp.float32(n4))
+                    num_neighbours = wp.int16(
+                        wp.max(1.0, wp.float32(n1) + wp.float32(n2) + wp.float32(n3) + wp.float32(n4))
+                    )
 
                 new_val = wp.min(load / num_neighbours, strength(w, d, direction, wsp, cs, ss, as_)) - (
                     wd + dd
@@ -289,14 +287,12 @@ def failure_spread_kernel(
             wet[widx, pos[0], pos[1], pos[2]], dry[widx, pos[0], pos[1], pos[2]], DENSITY_HALF
         ):
             dist = wp.int16((1.0 - 0.5 * wp.length(wp.vec3f(indices[j]))) * 25.0)
-            wp.atomic_sub(
-                current_load,
+            current_load[
                 widx,
                 positions[widx, i][0] + indices[j][0],
                 positions[widx, i][1] + indices[j][1],
                 positions[widx, i][2] + indices[j][2],
-                relu(dist),
-            )
+            ] -= relu(dist)
 
 
 @wp.kernel
@@ -325,7 +321,7 @@ def drip_kernel(
             if drip_amount > 0:
                 wet[widx, ii, jj, k] = saturating_add(wet_below, drip_amount)
                 wet[widx, ii, jj, k + 1] = w - drip_amount
-                distance[widx, ii, jj, k] = wp.min(distance[widx, ii, jj, k], saturating_add(dist, 1))
+                distance[widx, ii, jj, k] = wp.min(distance[widx, ii, jj, k], saturating_add(dist, wp.uint8(1)))
             else:
                 d1 = DENSITY_MAX - saturating_add(dry[widx, ii + 1, jj, k], wet[widx, ii + 1, jj, k])
                 d2 = DENSITY_MAX - saturating_add(dry[widx, ii, jj + 1, k], wet[widx, ii, jj + 1, k])
@@ -339,27 +335,27 @@ def drip_kernel(
 
                     if d1 > DENSITY_ZERO:
                         val = wp.uint8(wp.float32(drip_amount) * wp.float32(d1) / wp.float32(density_side))
-                        # FIXME: atomic_add may overflow
-                        wp.atomic_add(wet, widx, ii + 1, jj, k, val)
-                        wp.atomic_min(distance, widx, ii + 1, jj, k, dist_below + 2)
+                        w = wet[widx, ii + 1, jj, k]
+                        wet[widx, ii + 1, jj, k] = saturating_add(w, val)
+                        distance[widx, ii + 1, jj, k] = wp.min(distance[widx, ii + 1, jj, k], dist_below + wp.uint8(2))
 
                     if d2 > DENSITY_ZERO:
                         val = wp.uint8(wp.float32(drip_amount) * wp.float32(d2) / wp.float32(density_side))
-                        # FIXME: atomic_add may overflow
-                        wp.atomic_add(wet, widx, ii, jj + 1, k, val)
-                        wp.atomic_min(distance, widx, ii, jj + 1, k, dist_below + 2)
+                        w = wet[widx, ii, jj + 1, k]
+                        wet[widx, ii, jj + 1, k] = saturating_add(w, val)
+                        distance[widx, ii, jj + 1, k] = wp.min(distance[widx, ii, jj + 1, k], dist_below + wp.uint8(2))
 
                     if d3 > DENSITY_ZERO:
                         val = wp.uint8(wp.float32(drip_amount) * wp.float32(d3) / wp.float32(density_side))
-                        # FIXME: atomic_add may overflow
-                        wp.atomic_add(wet, widx, ii - 1, jj, k, val)
-                        wp.atomic_min(distance, widx, ii - 1, jj, k, dist_below + 2)
+                        w = wet[widx, ii - 1, jj, k]
+                        wet[widx, ii - 1, jj, k] = saturating_add(w, val)
+                        distance[widx, ii - 1, jj, k] = wp.min(distance[widx, ii - 1, jj, k], dist_below + wp.uint8(2))
 
                     if d4 > DENSITY_ZERO:
                         val = wp.uint8(wp.float32(drip_amount) * wp.float32(d4) / wp.float32(density_side))
-                        # FIXME: atomic_add may overflow
-                        wp.atomic_add(wet, widx, ii, jj - 1, k, val)
-                        wp.atomic_min(distance, widx, ii, jj - 1, k, dist_below + 2)
+                        w = wet[widx, ii, jj - 1, k]
+                        wet[widx, ii, jj - 1, k] = saturating_add(w, val)
+                        distance[widx, ii, jj - 1, k] = wp.min(distance[widx, ii, jj - 1, k], dist_below + wp.uint8(2))
 
                     wet[widx, ii, jj, k + 1] = saturating_sub(wet[widx, ii, jj, k + 1], drip_amount)
 
@@ -399,7 +395,7 @@ def spray_trajectory_kernel(
     if valid_pos(pos, wet.shape):
         w = wet[widx, pos[0], pos[1], pos[2]]
         d = dry[widx, pos[0], pos[1], pos[2]]
-        if not total_density_is_smaller(w, d, 128):
+        if not total_density_is_smaller(w, d, DENSITY_HALF):
             wp.atomic_max(ray_index, widx, i, SPRAY_COUNT - j - 10)
 
 
@@ -444,14 +440,17 @@ def respreading_kernel(
             wp.int32(wp.rint((ray_dir[widx, i][2] * velocities[i] * t - 1.0 / 2.0 * 9.81 * t * t) / h)),
         )
         if valid_pos(pos, wet.shape):
-            mass = (
-                wp.float32(wp.atomic_exch(wet, widx, pos[0], pos[1], pos[2], 0.0))
-                + wp.float32(wp.atomic_exch(wet, widx, pos[0] + 1, pos[1], pos[2], 0.0))
-                + wp.float32(wp.atomic_exch(wet, widx, pos[0] - 1, pos[1], pos[2], 0.0))
-                + wp.float32(wp.atomic_exch(wet, widx, pos[0], pos[1], pos[2] + 1, 0.0))
-                + wp.float32(wp.atomic_exch(wet, widx, pos[0], pos[1], pos[2] - 1, 0.0))
-            )
-            wp.atomic_add(droplet_mass, widx, i, mass)
+            m1 = wp.float32(wet[widx, pos[0], pos[1], pos[2]])
+            wet[widx, pos[0], pos[1], pos[2]] = DENSITY_ZERO
+            m2 = wp.float32(wet[widx, pos[0] + 1, pos[1], pos[2]])
+            wet[widx, pos[0] + 1, pos[1], pos[2]] = DENSITY_ZERO
+            m3 = wp.float32(wet[widx, pos[0] - 1, pos[1], pos[2]])
+            wet[widx, pos[0] - 1, pos[1], pos[2]] = DENSITY_ZERO
+            m4 = wp.float32(wet[widx, pos[0], pos[1], pos[2] + 1])
+            wet[widx, pos[0], pos[1], pos[2] + 1] = DENSITY_ZERO
+            m5 = wp.float32(wet[widx, pos[0], pos[1], pos[2] - 1])
+            wet[widx, pos[0], pos[1], pos[2] - 1] = DENSITY_ZERO
+            wp.atomic_add(droplet_mass, widx, i, m1 + m2 + m3 + m4 + m5)
 
 
 @wp.kernel
@@ -627,29 +626,26 @@ def spray_neighbours_kernel(
         spray_neighbours[widx, i, j] = 0.0
         return
 
-    spray_neighbours[widx, i, j] = wp.float32(
-        (DENSITY_MAX - saturating_add(w, d))
-        * wp.float32(
-            not total_density_is_smaller(
-                dry[widx, pos[0] + 1, pos[1], pos[2]], wet[widx, pos[0] + 1, pos[1], pos[2]], DENSITY_HALF
-            )
-            or not total_density_is_smaller(
-                dry[widx, pos[0] - 1, pos[1], pos[2]], wet[widx, pos[0] - 1, pos[1], pos[2]], DENSITY_HALF
-            )
-            or not total_density_is_smaller(
-                dry[widx, pos[0], pos[1] + 1, pos[2]], wet[widx, pos[0], pos[1] + 1, pos[2]], DENSITY_HALF
-            )
-            or not total_density_is_smaller(
-                dry[widx, pos[0], pos[1] - 1, pos[2]], wet[widx, pos[0], pos[1] - 1, pos[2]], DENSITY_HALF
-            )
-            or not total_density_is_smaller(
-                dry[widx, pos[0], pos[1], pos[2] + 1], wet[widx, pos[0], pos[1], pos[2] + 1], DENSITY_HALF
-            )
-            or not total_density_is_smaller(
-                dry[widx, pos[0], pos[1], pos[2] - 1], wet[widx, pos[0], pos[1], pos[2] - 1], DENSITY_HALF
-            )
-            or not total_density_is_smaller(w, d, DENSITY_HALF)
+    spray_neighbours[widx, i, j] = wp.float32(DENSITY_MAX - saturating_add(w, d)) * wp.float32(
+        not total_density_is_smaller(
+            dry[widx, pos[0] + 1, pos[1], pos[2]], wet[widx, pos[0] + 1, pos[1], pos[2]], DENSITY_HALF
         )
+        or not total_density_is_smaller(
+            dry[widx, pos[0] - 1, pos[1], pos[2]], wet[widx, pos[0] - 1, pos[1], pos[2]], DENSITY_HALF
+        )
+        or not total_density_is_smaller(
+            dry[widx, pos[0], pos[1] + 1, pos[2]], wet[widx, pos[0], pos[1] + 1, pos[2]], DENSITY_HALF
+        )
+        or not total_density_is_smaller(
+            dry[widx, pos[0], pos[1] - 1, pos[2]], wet[widx, pos[0], pos[1] - 1, pos[2]], DENSITY_HALF
+        )
+        or not total_density_is_smaller(
+            dry[widx, pos[0], pos[1], pos[2] + 1], wet[widx, pos[0], pos[1], pos[2] + 1], DENSITY_HALF
+        )
+        or not total_density_is_smaller(
+            dry[widx, pos[0], pos[1], pos[2] - 1], wet[widx, pos[0], pos[1], pos[2] - 1], DENSITY_HALF
+        )
+        or not total_density_is_smaller(w, d, DENSITY_HALF)
     )
     wp.atomic_add(density, widx, i, spray_neighbours[widx, i, j])
     wp.atomic_add(neighbour_count, widx, i, wp.float32(spray_neighbours[widx, i, j] != 0.0))
@@ -673,14 +669,14 @@ def spray_distribution_kernel(
 
     pos = voxels[widx, i] + ball_indices[j]
     if valid_pos(pos, wet.shape):
-        w = wp.float32(wet[widx, pos[0], pos[1], pos[2]]) / DENSITY_MAX_F32
-        d = wp.float32(dry[widx, pos[0], pos[1], pos[2]]) / DENSITY_MAX_F32
+        w = wet[widx, pos[0], pos[1], pos[2]]
+        w_f32 = wp.float32(w) / DENSITY_MAX_F32
+        d_f32 = wp.float32(dry[widx, pos[0], pos[1], pos[2]]) / DENSITY_MAX_F32
         diff = wp.min(
             (relu(remaining_mass[widx, i]) / (neighbour_count[widx, i] + 1.0)) * wp.float32(weight != 0.0),
-            relu(1.0 - w - d),
+            relu(1.0 - w_f32 - d_f32),
         )
-        # FIXME: this may overflow
-        wp.atomic_add(wet, widx, pos[0], pos[1], pos[2], wp.uint8(diff * DENSITY_MAX_F32))
+        wet[widx, pos[0], pos[1], pos[2]] = w + wp.uint8(diff * DENSITY_MAX_F32)
         wp.atomic_sub(remaining_mass, widx, i, diff)
 
 

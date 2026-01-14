@@ -32,13 +32,14 @@ def relu(a: Any):
 
 @wp.func
 def saturating_sub(a: wp.uint8, b: wp.uint8) -> wp.uint8:
-    return wp.select(b > a, a - b, wp.uint8(0))
+    return wp.where(b > a, wp.uint8(0), a - b)
 
 
 @wp.func
 def is_full(wet: wp.uint8, dry: wp.uint8) -> bool:
     return wet >= (wp.uint8(255) - dry)
 
+
 @wp.func
 def overflow_part(a: wp.uint8, b: wp.uint8) -> wp.uint8:
-    return wp.where((a + b) >= a, 0, a + b)
+    return wp.where((a + b) >= a, wp.uint8(0), a + b)
