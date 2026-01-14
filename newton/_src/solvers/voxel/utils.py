@@ -20,12 +20,12 @@ def saturating_add(a: wp.uint8, b: wp.uint8):
 @wp.func
 def saturating_add_4(a: wp.uint8, b: wp.uint8, c: wp.uint8, d: wp.uint8) -> wp.uint8:
     total = wp.uint16(a) + wp.uint16(b) + wp.uint16(c) + wp.uint16(d)
-    return wp.uint8(wp.min(total, 255))
+    return wp.uint8(wp.min(total, wp.uint16(255)))
 
 
 @wp.func
 def relu(a: wp.int16) -> wp.int16:
-    return wp.max(0, a)
+    return wp.max(wp.uint8(0), a)
 
 
 @wp.func

@@ -222,7 +222,7 @@ def capacity_propagation_kernel(
                 d = dry[widx, indices[0], indices[1], indices[2]]
                 load = current_load[widx, indices[0], indices[1], indices[2]]
 
-                num_neighbours = wp.int16(1)
+                num_neighbours = wp.float32(1.0)
                 if direction[2] == 0:
                     n1 = distance[widx, indices[0] + 1, indices[1], indices[2]] > dist and not total_density_is_smaller(
                         wet[widx, indices[0] + 1, indices[1], indices[2]],
@@ -245,7 +245,7 @@ def capacity_propagation_kernel(
                         DENSITY_HALF,
                     )
 
-                    num_neighbours = wp.max(1, wp.float32(n1) + wp.float32(n2) + wp.float32(n3) + wp.float32(n4))
+                    num_neighbours = wp.max(1.0, wp.float32(n1) + wp.float32(n2) + wp.float32(n3) + wp.float32(n4))
 
                 new_val = wp.min(load / num_neighbours, strength(w, d, direction, wsp, cs, ss, as_)) - (wd + dd) / wp.int16(10)
 
