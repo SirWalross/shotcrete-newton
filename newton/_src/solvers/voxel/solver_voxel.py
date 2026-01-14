@@ -224,10 +224,10 @@ class SolverVoxel(SolverBase):
 
     @override
     def reset(self, state_out: State, world_indices: wp.array(dtype=int)):
-        self.model.voxel_wet[world_indices].fill_(0.0)
-        self.model.voxel_dry[world_indices].fill_(0.0)
-        self.model.voxel_distance[world_indices].fill_(1e6)
-        self.model.voxel_load[world_indices].fill_(0.0)
+        self.model.voxel_wet[world_indices].fill_(0)
+        self.model.voxel_dry[world_indices].fill_(0)
+        self.model.voxel_distance[world_indices].fill_(255)
+        self.model.voxel_load[world_indices].fill_(0)
         wp.launch(
             set_floor_kernel,
             dim=(world_indices.shape[0], self.shape[1], self.shape[2]),
