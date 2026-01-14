@@ -69,7 +69,7 @@ def ray_for_pixel(
 
 
 @wp.kernel
-def raycast_sensor_kernel(
+def sensor_raycast_kernel(
     # Model
     wet: wp.array4d(dtype=wp.float32),
     dry: wp.array4d(dtype=wp.float32),

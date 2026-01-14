@@ -36,10 +36,10 @@ INT32_MAX = (1 << 31) - 1
 MAX_PARTICLE_RAY_MARCH_STEPS = 1 << 20
 
 
-class RaycastSensor:
+class SensorRaycast:
     """Raycast-based depth sensor for generating depth images.
 
-    The RaycastSensor simulates a depth camera by casting rays from a virtual camera through each pixel
+    The SensorRaycast simulates a depth camera by casting rays from a virtual camera through each pixel
     in an image. For each pixel, it finds the closest intersection with the scene geometry and records
     the distance as a depth value.
 
@@ -86,7 +86,7 @@ class RaycastSensor:
         h: float = 0.005,
         max_distance: float = 1000.0,
     ):
-        """Initialize a RaycastSensor.
+        """Initialize a SensorRaycast.
 
         Args:
             model: The Newton model containing the geometry to raycast against
