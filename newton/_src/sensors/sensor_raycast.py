@@ -19,7 +19,7 @@ import warnings
 import numpy as np
 import warp as wp
 
-from ..geometry.raycast import raycast_sensor_kernel
+from ..geometry.raycast import sensor_raycast_kernel
 from ..sim import Model, State
 
 
@@ -195,7 +195,7 @@ class SensorRaycast:
         self._depth_buffer.fill_(self.max_distance)
 
         wp.launch(
-            kernel=raycast_sensor_kernel,
+            kernel=sensor_raycast_kernel,
             dim=(self.width, self.height, self._count),
             inputs=[
                 self.model.voxel_wet,

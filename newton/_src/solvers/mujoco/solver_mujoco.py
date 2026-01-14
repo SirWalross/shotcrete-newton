@@ -715,7 +715,6 @@ class SolverMuJoCo(SolverBase):
     def step(
         self, state_in: State, state_out: State, control: Control, contacts: Contacts, rewards: VoxelRewards, dt: float
     ):
-    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         # When ref is used, we rely on MuJoCo's FK (eval_fk=False) because ref is handled by MuJoCo via qpos0
         eval_fk = not self._has_ref
 
