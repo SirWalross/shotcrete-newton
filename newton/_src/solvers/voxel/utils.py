@@ -31,3 +31,7 @@ def relu(a: wp.int16) -> wp.int16:
 @wp.func
 def saturating_sub(a: wp.uint8, b: wp.uint8) -> wp.uint8:
     return wp.select(b > a, a - b, wp.uint8(0))
+
+@wp.func
+def is_full(wet: wp.uint8, dry: wp.uint8) -> bool:
+    return wet >= (wp.uint8(255) - dry)
