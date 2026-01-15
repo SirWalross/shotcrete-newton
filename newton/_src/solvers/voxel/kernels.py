@@ -299,9 +299,7 @@ def capacity_propagation_kernel(
                         wp.max(1.0, wp.float32(n1) + wp.float32(n2) + wp.float32(n3) + wp.float32(n4))
                     )
 
-                new_val = wp.min(
-                    load / num_neighbours, strength(w, d, direction, wsp, cs, ss, as_)
-                ) - (wd + dd)
+                new_val = wp.min(load / num_neighbours, strength(w, d, direction, wsp, cs, ss, as_)) - (wd + dd)
 
                 current_load[widx, other[0], other[1], other[2]] = wp.max(
                     current_load[widx, other[0], other[1], other[2]], new_val
@@ -338,7 +336,7 @@ def drip_kernel(
     distance: wp.array4d(dtype=wp.uint8),
     max_z: wp.int32,
 ):
-    j, i, widx = wp.tid()
+    widx, i, j = wp.tid()
 
     ii = i + 1
     jj = j + 1

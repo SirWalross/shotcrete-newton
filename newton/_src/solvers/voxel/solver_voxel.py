@@ -270,7 +270,7 @@ class SolverVoxel(SolverBase):
     def drip(self):
         wp.launch(
             drip_kernel,
-            dim=(self.shape[2] - 2, self.shape[1] - 2, self.shape[0]),
+            dim=(self.shape[0], self.shape[1] - 2, self.shape[2] - 2),
             inputs=[self.model.voxel_wet, self.model.voxel_dry, self.model.voxel_distance, self.shape[3] - 2],
         )
 
