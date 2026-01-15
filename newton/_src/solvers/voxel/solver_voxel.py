@@ -105,10 +105,10 @@ class SolverVoxel(SolverBase):
         nozzle_opening_angle: float = 0.157,
         overlap_distance: float = 50.0,
         anisotropic_distance_weight: float = 2.8,
-        shear_strength: int = 50,
-        adhesion_strength: int = 20,
-        compression_strength: int = 1285,
-        wet_strength_penalty: int = 5,
+        shear_strength: float = 50.0,
+        adhesion_strength: float = 20.0,
+        compression_strength: float = 1285.0,
+        wet_strength_penalty: float = 0.2,
         debug_mode: bool = False,
     ):
         super().__init__(model=model)
@@ -423,7 +423,7 @@ class SolverVoxel(SolverBase):
             for _ in range(5):
                 wp.launch(
                     update_distances_kernel,
-                    dim=(self.shape[0], self.k, self.ball_indices.shape[0]),
+                    dim=(self.ball_indices.shape[0], self.k, self.shape[0]),
                     inputs=[
                         self.model.voxel_wet,
                         self.model.voxel_dry,
@@ -438,7 +438,7 @@ class SolverVoxel(SolverBase):
             for _ in range(5):
                 wp.launch(
                     update_distances_kernel,
-                    dim=(self.shape[0], self.k, self.ball_indices.shape[0]),
+                    dim=(self.ball_indices.shape[0], self.k, self.shape[0]),
                     inputs=[
                         self.model.voxel_wet,
                         self.model.voxel_dry,

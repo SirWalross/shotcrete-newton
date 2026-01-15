@@ -78,7 +78,7 @@ def update_distances_kernel(
     indices: wp.array(dtype=wp.vec3i),
     positions: wp.array2d(dtype=wp.vec3i),
 ):
-    widx, i, j = wp.tid()
+    j, i, widx = wp.tid()
     pos = positions[widx, i] + indices[j]
     if valid_pos(pos, wet.shape, 1):
         distance[widx, pos[0], pos[1], pos[2]] = wp.min(
@@ -89,12 +89,12 @@ def update_distances_kernel(
                 ),
                 DISTANCE_MAX,
                 min_six_way(
-                    distance[widx, pos[0] + 1, pos[1], pos[2]] + wp.uint8(2),
-                    distance[widx, pos[0] - 1, pos[1], pos[2]] + wp.uint8(2),
-                    distance[widx, pos[0], pos[1] + 1, pos[2]] + wp.uint8(2),
-                    distance[widx, pos[0], pos[1] - 1, pos[2]] + wp.uint8(2),
-                    distance[widx, pos[0], pos[1], pos[2] + 1] + wp.uint8(5),
-                    distance[widx, pos[0], pos[1], pos[2] - 1] + wp.uint8(1),
+                    saturating_add(distance[widx, pos[0] + 1, pos[1], pos[2]], wp.uint8(2)),
+                    saturating_add(distance[widx, pos[0] - 1, pos[1], pos[2]], wp.uint8(2)),
+                    saturating_add(distance[widx, pos[0], pos[1] + 1, pos[2]], wp.uint8(2)),
+                    saturating_add(distance[widx, pos[0], pos[1] - 1, pos[2]], wp.uint8(2)),
+                    saturating_add(distance[widx, pos[0], pos[1], pos[2] + 1], wp.uint8(5)),
+                    saturating_add(distance[widx, pos[0], pos[1], pos[2] - 1], wp.uint8(1)),
                 ),
             ),
         )
@@ -115,18 +115,18 @@ def initialize_load_kernel(
 
 
 @wp.func
-def compression_strength(wet: wp.uint8, dry: wp.uint8, wsp: wp.int16, cs: wp.int16) -> wp.int16:
-    return (wp.int16(wet) * wp.int16(10) / wsp + wp.int16(dry) * wp.int16(10)) / wp.int16(100) * cs
+def compression_strength(wet: wp.float32, dry: wp.float32, wsp: wp.float32, cs: wp.float32) -> wp.int16:
+    return wp.int16((wet * wsp + dry) * cs)
 
 
 @wp.func
-def shear_strength(wet: wp.uint8, dry: wp.uint8, wsp: wp.int16, ss: wp.int16) -> wp.int16:
-    return (wp.int16(wet) * wp.int16(10) / wsp + wp.int16(dry) * wp.int16(10)) / wp.int16(100) * ss
+def shear_strength(wet: wp.float32, dry: wp.float32, wsp: wp.float32, ss: wp.float32) -> wp.int16:
+    return wp.int16((wet * wsp + dry) * ss)
 
 
 @wp.func
-def adhesion_strength(wet: wp.uint8, dry: wp.uint8, wsp: wp.int16, as_: wp.int16) -> wp.int16:
-    return (wp.int16(wet) * wp.int16(10) / wsp + wp.int16(dry) * wp.int16(10)) / wp.int16(100) * as_
+def adhesion_strength(wet: wp.float32, dry: wp.float32, wsp: wp.float32, as_: wp.float32) -> wp.int16:
+    return wp.int16((wet * wsp + dry) * as_)
 
 
 @wp.func
@@ -134,15 +134,21 @@ def strength(
     wet: wp.uint8,
     dry: wp.uint8,
     direction: wp.vec3i,
-    wsp: wp.int16,
-    cs: wp.int16,
-    ss: wp.int16,
-    as_: wp.int16,
+    wsp: wp.float32,
+    cs: wp.float32,
+    ss: wp.float32,
+    as_: wp.float32,
 ) -> wp.int16:
+    w = wp.float32(wet)
+    d = wp.float32(dry)
     return wp.where(
-        direction[2] == 1,
-        compression_strength(wet, dry, wsp, cs),
-        wp.where(direction[2] == -1, adhesion_strength(wet, dry, wsp, as_), shear_strength(wet, dry, wsp, ss)),
+        is_wall(wet, dry),
+        LOAD_MAX,
+        wp.where(
+            direction[2] == 1,
+            compression_strength(w, d, wsp, cs),
+            wp.where(direction[2] == -1, adhesion_strength(w, d, wsp, as_), shear_strength(w, d, wsp, ss)),
+        ),
     )
 
 
@@ -219,10 +225,10 @@ def capacity_propagation_kernel(
     offset: wp.int32,
     length: wp.int32,
     direction: wp.vec3i,
-    wsp: wp.int16,
-    cs: wp.int16,
-    ss: wp.int16,
-    as_: wp.int16,
+    wsp: wp.float32,
+    cs: wp.float32,
+    ss: wp.float32,
+    as_: wp.float32,
 ):
     widx, i, j, k = wp.tid()
     for l in range(length):
@@ -234,7 +240,7 @@ def capacity_propagation_kernel(
         wd = wp.int16(wet[widx, other[0], other[1], other[2]])
         dd = wp.int16(dry[widx, other[0], other[1], other[2]])
 
-        if (wd + dd) > wp.int16(DENSITY_HALF):
+        if (wd + dd) >= wp.int16(DENSITY_HALF):
             dist = distance[widx, indices[0], indices[1], indices[2]]
             if distance[widx, other[0], other[1], other[2]] > dist:
                 # pass capacity to neighbour
@@ -244,34 +250,58 @@ def capacity_propagation_kernel(
 
                 num_neighbours = wp.int16(1)
                 if direction[2] == 0:
-                    n1 = distance[widx, indices[0] + 1, indices[1], indices[2]] > dist and not total_density_is_smaller(
-                        wet[widx, indices[0] + 1, indices[1], indices[2]],
-                        dry[widx, indices[0] + 1, indices[1], indices[2]],
-                        DENSITY_HALF,
+                    w = wet[widx, indices[0] + 1, indices[1], indices[2]]
+                    d = dry[widx, indices[0] + 1, indices[1], indices[2]]
+                    n1 = (
+                        distance[widx, indices[0] + 1, indices[1], indices[2]] > dist
+                        and not total_density_is_smaller(
+                            w,
+                            d,
+                            DENSITY_HALF,
+                        )
+                        and not is_wall(w, d)
                     )
-                    n2 = distance[widx, indices[0] - 1, indices[1], indices[2]] > dist and not total_density_is_smaller(
-                        wet[widx, indices[0] - 1, indices[1], indices[2]],
-                        dry[widx, indices[0] - 1, indices[1], indices[2]],
-                        DENSITY_HALF,
+                    w = wet[widx, indices[0] - 1, indices[1], indices[2]]
+                    d = dry[widx, indices[0] - 1, indices[1], indices[2]]
+                    n2 = (
+                        distance[widx, indices[0] - 1, indices[1], indices[2]] > dist
+                        and not total_density_is_smaller(
+                            w,
+                            d,
+                            DENSITY_HALF,
+                        )
+                        and not is_wall(w, d)
                     )
-                    n3 = distance[widx, indices[0], indices[1] + 1, indices[2]] > dist and not total_density_is_smaller(
-                        wet[widx, indices[0], indices[1] + 1, indices[2]],
-                        dry[widx, indices[0], indices[1] + 1, indices[2]],
-                        DENSITY_HALF,
+                    w = wet[widx, indices[0], indices[1] + 1, indices[2]]
+                    d = dry[widx, indices[0], indices[1] + 1, indices[2]]
+                    n3 = (
+                        distance[widx, indices[0], indices[1] + 1, indices[2]] > dist
+                        and not total_density_is_smaller(
+                            w,
+                            d,
+                            DENSITY_HALF,
+                        )
+                        and not is_wall(w, d)
                     )
-                    n4 = distance[widx, indices[0], indices[1] - 1, indices[2]] > dist and not total_density_is_smaller(
-                        wet[widx, indices[0], indices[1] - 1, indices[2]],
-                        dry[widx, indices[0], indices[1] - 1, indices[2]],
-                        DENSITY_HALF,
+                    w = wet[widx, indices[0], indices[1] - 1, indices[2]]
+                    d = dry[widx, indices[0], indices[1] - 1, indices[2]]
+                    n4 = (
+                        distance[widx, indices[0], indices[1] - 1, indices[2]] > dist
+                        and not total_density_is_smaller(
+                            w,
+                            d,
+                            DENSITY_HALF,
+                        )
+                        and not is_wall(w, d)
                     )
 
                     num_neighbours = wp.int16(
                         wp.max(1.0, wp.float32(n1) + wp.float32(n2) + wp.float32(n3) + wp.float32(n4))
                     )
 
-                new_val = wp.min(load / num_neighbours, strength(w, d, direction, wsp, cs, ss, as_)) - (
-                    wd + dd
-                ) / wp.int16(10)
+                new_val = wp.min(
+                    load / num_neighbours, strength(w, d, direction, wsp, cs, ss, as_)
+                ) - (wd + dd)
 
                 current_load[widx, other[0], other[1], other[2]] = wp.max(
                     current_load[widx, other[0], other[1], other[2]], new_val
@@ -346,25 +376,33 @@ def drip_kernel(
                     val = wp.uint8(wp.float32(drip_amount) * wp.float32(d1) / wp.float32(density_side))
                     w = wet[widx, ii + 1, jj, k]
                     wet[widx, ii + 1, jj, k] = saturating_add(w, val)
-                    distance[widx, ii + 1, jj, k] = wp.min(distance[widx, ii + 1, jj, k], dist_below + wp.uint8(2))
+                    distance[widx, ii + 1, jj, k] = wp.min(
+                        distance[widx, ii + 1, jj, k], saturating_add(dist_below, wp.uint8(2))
+                    )
 
                 if d2 > DENSITY_ZERO:
                     val = wp.uint8(wp.float32(drip_amount) * wp.float32(d2) / wp.float32(density_side))
                     w = wet[widx, ii, jj + 1, k]
                     wet[widx, ii, jj + 1, k] = saturating_add(w, val)
-                    distance[widx, ii, jj + 1, k] = wp.min(distance[widx, ii, jj + 1, k], dist_below + wp.uint8(2))
+                    distance[widx, ii, jj + 1, k] = wp.min(
+                        distance[widx, ii, jj + 1, k], saturating_add(dist_below, wp.uint8(2))
+                    )
 
                 if d3 > DENSITY_ZERO:
                     val = wp.uint8(wp.float32(drip_amount) * wp.float32(d3) / wp.float32(density_side))
                     w = wet[widx, ii - 1, jj, k]
                     wet[widx, ii - 1, jj, k] = saturating_add(w, val)
-                    distance[widx, ii - 1, jj, k] = wp.min(distance[widx, ii - 1, jj, k], dist_below + wp.uint8(2))
+                    distance[widx, ii - 1, jj, k] = wp.min(
+                        distance[widx, ii - 1, jj, k], saturating_add(dist_below, wp.uint8(2))
+                    )
 
                 if d4 > DENSITY_ZERO:
                     val = wp.uint8(wp.float32(drip_amount) * wp.float32(d4) / wp.float32(density_side))
                     w = wet[widx, ii, jj - 1, k]
                     wet[widx, ii, jj - 1, k] = saturating_add(w, val)
-                    distance[widx, ii, jj - 1, k] = wp.min(distance[widx, ii, jj - 1, k], dist_below + wp.uint8(2))
+                    distance[widx, ii, jj - 1, k] = wp.min(
+                        distance[widx, ii, jj - 1, k], saturating_add(dist_below, wp.uint8(2))
+                    )
 
                 wet[widx, ii, jj, k + 1] = saturating_sub(wet[widx, ii, jj, k + 1], drip_amount)
 
