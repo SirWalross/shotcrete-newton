@@ -423,7 +423,7 @@ class SolverVoxel(SolverBase):
             for _ in range(5):
                 wp.launch(
                     update_distances_kernel,
-                    dim=(self.ball_indices.shape[0], self.k, self.shape[0]),
+                    dim=(self.shape[0], self.k, self.ball_indices.shape[0]),
                     inputs=[
                         self.model.voxel_wet,
                         self.model.voxel_dry,
@@ -438,7 +438,7 @@ class SolverVoxel(SolverBase):
             for _ in range(5):
                 wp.launch(
                     update_distances_kernel,
-                    dim=(self.ball_indices.shape[0], self.k, self.shape[0]),
+                    dim=(self.shape[0], self.k, self.ball_indices.shape[0]),
                     inputs=[
                         self.model.voxel_wet,
                         self.model.voxel_dry,

@@ -78,7 +78,7 @@ def update_distances_kernel(
     indices: wp.array(dtype=wp.vec3i),
     positions: wp.array2d(dtype=wp.vec3i),
 ):
-    j, i, widx = wp.tid()
+    widx, i, j = wp.tid()
     pos = positions[widx, i] + indices[j]
     if valid_pos(pos, wet.shape, 1):
         distance[widx, pos[0], pos[1], pos[2]] = wp.min(
