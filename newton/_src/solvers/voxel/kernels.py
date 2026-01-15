@@ -30,7 +30,7 @@ LOAD_MAX = wp.int16(32767)
 
 @wp.kernel
 def update_cond_kernel(
-    i: wp.array(dtype=int), drip_vel: int, adhesion_check: wp.array(dtype=int), drip: wp.array(dtype=int)
+    i: wp.array(dtype=int), drip_vel: int, drip: wp.array(dtype=int), adhesion_check: wp.array(dtype=int)
 ):
     adhesion_check[0] = wp.int32(i[0] % 10 == 0)
     drip[0] = wp.int32(i[0] % drip_vel == 0)
