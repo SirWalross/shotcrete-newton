@@ -248,58 +248,7 @@ def capacity_propagation_kernel(
                 d = dry[widx, indices[0], indices[1], indices[2]]
                 load = current_load[widx, indices[0], indices[1], indices[2]]
 
-                num_neighbours = wp.int16(1)
-                if direction[2] == 0:
-                    w = wet[widx, indices[0] + 1, indices[1], indices[2]]
-                    d = dry[widx, indices[0] + 1, indices[1], indices[2]]
-                    n1 = (
-                        distance[widx, indices[0] + 1, indices[1], indices[2]] > dist
-                        and not total_density_is_smaller(
-                            w,
-                            d,
-                            DENSITY_HALF,
-                        )
-                        and not is_wall(w, d)
-                    )
-                    w = wet[widx, indices[0] - 1, indices[1], indices[2]]
-                    d = dry[widx, indices[0] - 1, indices[1], indices[2]]
-                    n2 = (
-                        distance[widx, indices[0] - 1, indices[1], indices[2]] > dist
-                        and not total_density_is_smaller(
-                            w,
-                            d,
-                            DENSITY_HALF,
-                        )
-                        and not is_wall(w, d)
-                    )
-                    w = wet[widx, indices[0], indices[1] + 1, indices[2]]
-                    d = dry[widx, indices[0], indices[1] + 1, indices[2]]
-                    n3 = (
-                        distance[widx, indices[0], indices[1] + 1, indices[2]] > dist
-                        and not total_density_is_smaller(
-                            w,
-                            d,
-                            DENSITY_HALF,
-                        )
-                        and not is_wall(w, d)
-                    )
-                    w = wet[widx, indices[0], indices[1] - 1, indices[2]]
-                    d = dry[widx, indices[0], indices[1] - 1, indices[2]]
-                    n4 = (
-                        distance[widx, indices[0], indices[1] - 1, indices[2]] > dist
-                        and not total_density_is_smaller(
-                            w,
-                            d,
-                            DENSITY_HALF,
-                        )
-                        and not is_wall(w, d)
-                    )
-
-                    num_neighbours = wp.int16(
-                        wp.max(1.0, wp.float32(n1) + wp.float32(n2) + wp.float32(n3) + wp.float32(n4))
-                    )
-
-                new_val = wp.min(load / num_neighbours, strength(w, d, direction, wsp, cs, ss, as_)) - (wd + dd)
+                new_val = wp.min(load, strength(w, d, direction, wsp, cs, ss, as_)) - (wd + dd)
 
                 current_load[widx, other[0], other[1], other[2]] = wp.max(
                     current_load[widx, other[0], other[1], other[2]], new_val
