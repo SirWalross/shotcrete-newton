@@ -280,7 +280,7 @@ def failure_spread_kernel(
     indices: wp.array(dtype=wp.vec3i),
     positions: wp.array2d(dtype=wp.vec3i),
 ):
-    widx, i, j = wp.tid()
+    j, i, widx = wp.tid()
     pos = positions[widx, i] + indices[j]
     if valid_pos(pos, wet.shape):
         if not total_density_is_smaller(
@@ -302,7 +302,7 @@ def drip_kernel(
     distance: wp.array4d(dtype=wp.uint8),
     max_z: wp.int32,
 ):
-    widx, i, j = wp.tid()
+    j, i, widx = wp.tid()
 
     ii = i + 1
     jj = j + 1
@@ -661,7 +661,7 @@ def spray_distribution_kernel(
     remaining_mass: wp.array2d(dtype=wp.float32),
     neighbour_count: wp.array2d(dtype=wp.float32),
 ):
-    widx, i, j = wp.tid()
+    j, i, widx = wp.tid()
 
     weight = spray_neighbours[widx, i, j]
     if weight <= 0.0:

@@ -270,7 +270,7 @@ class SolverVoxel(SolverBase):
     def drip(self):
         wp.launch(
             drip_kernel,
-            dim=(self.shape[0], self.shape[1] - 2, self.shape[2] - 2),
+            dim=(self.shape[2] - 2, self.shape[1] - 2, self.shape[0]),
             inputs=[self.model.voxel_wet, self.model.voxel_dry, self.model.voxel_distance, self.shape[3] - 2],
         )
 
@@ -395,7 +395,7 @@ class SolverVoxel(SolverBase):
         with wp.ScopedTimer("failure spread", active=self.active, synchronize=self.synchronize):
             wp.launch(
                 failure_spread_kernel,
-                dim=(self.shape[0], self.k, self.ball_indices.shape[0]),
+                dim=(self.ball_indices.shape[0], self.k, self.shape[0]),
                 inputs=[
                     self.model.voxel_wet,
                     self.model.voxel_dry,
@@ -608,7 +608,7 @@ class SolverVoxel(SolverBase):
                     for _ in range(5):
                         wp.launch(
                             spray_distribution_kernel,
-                            dim=self.spray_neighbours.shape,
+                            dim=[self.spray_neighbours.shape[2], self.spray_neighbours.shape[1], self.spray_neighbours.shape[0]],
                             inputs=[
                                 self.model.voxel_wet,
                                 self.model.voxel_dry,
