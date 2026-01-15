@@ -606,12 +606,12 @@ class SolverVoxel(SolverBase):
                         outputs=[self.spray_neighbours, self.density, self.neighbour_count],
                     )
                 with wp.ScopedTimer("spray distribution", active=self.active, synchronize=self.synchronize):
-                    for i in range(8):
+                    for i in range(10):
                         wp.launch(
                             spray_distribution_kernel,
                             dim=[
-                                self.spray_neighbours.shape[2],
                                 self.spray_neighbours.shape[1],
+                                self.spray_neighbours.shape[2],
                                 self.spray_neighbours.shape[0],
                             ],
                             inputs=[
@@ -641,12 +641,12 @@ class SolverVoxel(SolverBase):
                 ],
                 outputs=[self.spray_neighbours, self.density, self.neighbour_count],
             )
-            for i in range(8):
+            for i in range(10):
                 wp.launch(
                     spray_distribution_kernel,
                     dim=[
-                        self.spray_neighbours.shape[2],
                         self.spray_neighbours.shape[1],
+                        self.spray_neighbours.shape[2],
                         self.spray_neighbours.shape[0],
                     ],
                     inputs=[

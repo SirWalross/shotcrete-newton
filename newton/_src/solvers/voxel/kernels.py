@@ -689,7 +689,7 @@ def spray_distribution_kernel(
     seed: wp.array(dtype=wp.int32),
     seed2: wp.int32,
 ):
-    j, i, widx = wp.tid()
+    i, j, widx = wp.tid()
 
     weight = spray_neighbours[widx, i, j]
     if weight <= 0.0:
@@ -713,7 +713,8 @@ def spray_distribution_kernel(
         )
         diff = wp.where((diff - wp.floor(diff)) > wp.randf(state), wp.ceil(diff), wp.floor(diff))
         wet[widx, pos[0], pos[1], pos[2]] += wp.uint8(diff)
-        wp.atomic_sub(remaining_mass, widx, i, wp.floor(diff) / DENSITY_MAX_F32)
+        if wp.uint8(diff) != DENSITY_ZERO:
+            wp.atomic_sub(remaining_mass, widx, i, wp.floor(diff) / DENSITY_MAX_F32)
 
 
 @wp.kernel
