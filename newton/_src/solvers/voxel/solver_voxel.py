@@ -488,6 +488,7 @@ class SolverVoxel(SolverBase):
                 dim=(self.shape[0], self.k, self.respreading_backtracking_amount),
                 inputs=[
                     self.model.voxel_wet,
+                    self.model.voxel_dry,
                     self.sigma,
                     self.ray_indices,
                     self.positions,

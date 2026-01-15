@@ -43,3 +43,8 @@ def is_full(wet: wp.uint8, dry: wp.uint8) -> bool:
 @wp.func
 def overflow_part(a: wp.uint8, b: wp.uint8) -> wp.uint8:
     return wp.where((a + b) >= a, wp.uint8(0), a + b)
+
+
+@wp.func
+def is_wall(w: wp.uint8, d: wp.uint8) -> bool:
+    return w ==wp.uint8(255) and d ==wp.uint8(255)
