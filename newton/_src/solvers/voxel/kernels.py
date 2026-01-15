@@ -626,7 +626,7 @@ def spray_neighbours_kernel(
         spray_neighbours[widx, i, j] = 0.0
         return
 
-    spray_neighbours[widx, i, j] = wp.float32(DENSITY_MAX - saturating_add(w, d)) * wp.float32(
+    spray_neighbours[widx, i, j] = relu(1.0 - wp.float32(w) / DENSITY_MAX_F32 - wp.float32(d) / DENSITY_MAX_F32) * wp.float32(
         not total_density_is_smaller(
             dry[widx, pos[0] + 1, pos[1], pos[2]], wet[widx, pos[0] + 1, pos[1], pos[2]], DENSITY_HALF
         )
@@ -660,6 +660,8 @@ def spray_distribution_kernel(
     spray_neighbours: wp.array3d(dtype=wp.float32),
     remaining_mass: wp.array2d(dtype=wp.float32),
     neighbour_count: wp.array2d(dtype=wp.float32),
+    seed: wp.array(dtype=wp.int32),
+    seed2: wp.int32,
 ):
     j, i, widx = wp.tid()
 
@@ -668,16 +670,21 @@ def spray_distribution_kernel(
         return
 
     pos = voxels[widx, i] + ball_indices[j]
-    if valid_pos(pos, wet.shape):
-        w = wet[widx, pos[0], pos[1], pos[2]]
+    if not valid_pos(pos, wet.shape):
+        return
+    w = wet[widx, pos[0], pos[1], pos[2]]
+    d = dry[widx, pos[0], pos[1], pos[2]]
+    if total_density_is_smaller(w, d, DENSITY_MAX):
         w_f32 = wp.float32(w) / DENSITY_MAX_F32
-        d_f32 = wp.float32(dry[widx, pos[0], pos[1], pos[2]]) / DENSITY_MAX_F32
+        d_f32 = wp.float32(d) / DENSITY_MAX_F32
+        state = wp.rand_init(wp.int32(wp.rand_init(seed[0], seed2)), wp.int32(wp.rand_init(i, j)))
         diff = wp.min(
-            (relu(remaining_mass[widx, i]) / (neighbour_count[widx, i] + 1.0)) * wp.float32(weight != 0.0),
+            (relu(remaining_mass[widx, i]) / (neighbour_count[widx, i] + 1.0)) * wp.float32(weight != 0.0) * 0.5,
             relu(1.0 - w_f32 - d_f32),
-        )
-        wet[widx, pos[0], pos[1], pos[2]] = w + wp.uint8(diff * DENSITY_MAX_F32)
-        wp.atomic_sub(remaining_mass, widx, i, diff)
+        ) * DENSITY_MAX_F32
+        diff = wp.where((diff - wp.floor(diff)) > wp.randf(state), wp.ceil(diff), wp.floor(diff))
+        wet[widx, pos[0], pos[1], pos[2]] += wp.uint8(diff)
+        wp.atomic_sub(remaining_mass, widx, i, wp.floor(diff) / DENSITY_MAX_F32)
 
 
 @wp.kernel

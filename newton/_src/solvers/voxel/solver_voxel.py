@@ -605,10 +605,14 @@ class SolverVoxel(SolverBase):
                         outputs=[self.spray_neighbours, self.density, self.neighbour_count],
                     )
                 with wp.ScopedTimer("spray distribution", active=self.active, synchronize=self.synchronize):
-                    for _ in range(5):
+                    for i in range(8):
                         wp.launch(
                             spray_distribution_kernel,
-                            dim=[self.spray_neighbours.shape[2], self.spray_neighbours.shape[1], self.spray_neighbours.shape[0]],
+                            dim=[
+                                self.spray_neighbours.shape[2],
+                                self.spray_neighbours.shape[1],
+                                self.spray_neighbours.shape[0],
+                            ],
                             inputs=[
                                 self.model.voxel_wet,
                                 self.model.voxel_dry,
@@ -617,6 +621,8 @@ class SolverVoxel(SolverBase):
                                 self.spray_neighbours,
                                 self.droplet_mass,
                                 self.neighbour_count,
+                                self.i,
+                                i,
                             ],
                         )
             self.update_distances()
@@ -634,10 +640,14 @@ class SolverVoxel(SolverBase):
                 ],
                 outputs=[self.spray_neighbours, self.density, self.neighbour_count],
             )
-            for _ in range(5):
+            for i in range(8):
                 wp.launch(
                     spray_distribution_kernel,
-                    dim=self.spray_neighbours.shape,
+                    dim=[
+                        self.spray_neighbours.shape[2],
+                        self.spray_neighbours.shape[1],
+                        self.spray_neighbours.shape[0],
+                    ],
                     inputs=[
                         self.model.voxel_wet,
                         self.model.voxel_dry,
@@ -646,6 +656,8 @@ class SolverVoxel(SolverBase):
                         self.spray_neighbours,
                         self.rebound_droplet_mass,
                         self.neighbour_count,
+                        self.i,
+                        i,
                     ],
                 )
             self.update_rebound_distances()
