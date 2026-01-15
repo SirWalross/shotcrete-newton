@@ -485,7 +485,7 @@ class SolverVoxel(SolverBase):
             wp.launch(kernel=sum_kernel, dim=(self.shape[0], self.k), inputs=[self.ray_indices, self.avg_ray_index])
             wp.launch(
                 respreading_kernel,
-                dim=(self.shape[0], self.k, self.respreading_backtracking_amount),
+                dim=(self.respreading_backtracking_amount, self.k, self.shape[0]),
                 inputs=[
                     self.model.voxel_wet,
                     self.model.voxel_dry,

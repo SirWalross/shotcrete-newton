@@ -441,46 +441,55 @@ def respreading_kernel(
     h: wp.float32,
     k: wp.int32,
 ):
-    widx, i, j = wp.tid()
-    if wp.float32(ray_index[widx, i] - j) > (wp.float32(average_index[widx]) / wp.float32(k) + 5.0):
-        t = wp.float32(SPRAY_COUNT - ray_index[widx, i] + j) * linear_spacing / velocities[i]
+    j, i, widx = wp.tid()
+    if wp.float32(ray_index[widx, i] + j) > (wp.float32(average_index[widx]) / wp.float32(k) + 5.0):
+        t = wp.float32(SPRAY_COUNT - ray_index[widx, i] - j) * linear_spacing / velocities[i]
         pos = ray_pos[widx, i] + wp.vec3i(
             wp.int32(wp.rint(ray_dir[widx, i][0] * velocities[i] * t / h)),
             wp.int32(wp.rint(ray_dir[widx, i][1] * velocities[i] * t / h)),
             wp.int32(wp.rint((ray_dir[widx, i][2] * velocities[i] * t - 1.0 / 2.0 * 9.81 * t * t) / h)),
         )
         if valid_pos(pos, wet.shape):
-            w1 = wp.float32(wet[widx, pos[0], pos[1], pos[2]])
-            d1 = wp.float32(dry[widx, pos[0], pos[1], pos[2]])
+            w1 = wet[widx, pos[0], pos[1], pos[2]]
+            d1 = dry[widx, pos[0], pos[1], pos[2]]
             if not is_wall(w1, d1):
                 wet[widx, pos[0], pos[1], pos[2]] = DENSITY_ZERO
             else:
-                w1 = 0.0
-            w2 = wp.float32(wet[widx, pos[0] + 1, pos[1], pos[2]])
-            d2 = wp.float32(dry[widx, pos[0] + 1, pos[1], pos[2]])
+                w1 = wp.uint8(0)
+            w2 = wet[widx, pos[0] + 1, pos[1], pos[2]]
+            d2 = dry[widx, pos[0] + 1, pos[1], pos[2]]
             if not is_wall(w2, d2):
                 wet[widx, pos[0] + 1, pos[1], pos[2]] = DENSITY_ZERO
             else:
-                w2 = 0.0
-            w3 = wp.float32(wet[widx, pos[0] - 1, pos[1], pos[2]])
-            d3 = wp.float32(dry[widx, pos[0] - 1, pos[1], pos[2]])
+                w2 = wp.uint8(0)
+            w3 = wet[widx, pos[0] - 1, pos[1], pos[2]]
+            d3 = dry[widx, pos[0] - 1, pos[1], pos[2]]
             if not is_wall(w3, d3):
                 wet[widx, pos[0] - 1, pos[1], pos[2]] = DENSITY_ZERO
             else:
-                w3 = 0.0
-            w4 = wp.float32(wet[widx, pos[0], pos[1], pos[2] + 1])
-            d4 = wp.float32(dry[widx, pos[0], pos[1], pos[2] + 1])
+                w3 = wp.uint8(0)
+            w4 = wet[widx, pos[0], pos[1], pos[2] + 1]
+            d4 = dry[widx, pos[0], pos[1], pos[2] + 1]
             if not is_wall(w4, d4):
                 wet[widx, pos[0], pos[1], pos[2] + 1] = DENSITY_ZERO
             else:
-                w4 = 0.0
-            w5 = wp.float32(wet[widx, pos[0], pos[1], pos[2] - 1])
-            d5 = wp.float32(dry[widx, pos[0], pos[1], pos[2] - 1])
+                w4 = wp.uint8(0)
+            w5 = wet[widx, pos[0], pos[1], pos[2] - 1]
+            d5 = dry[widx, pos[0], pos[1], pos[2] - 1]
             if not is_wall(w5, d5):
                 wet[widx, pos[0], pos[1], pos[2] - 1] = DENSITY_ZERO
             else:
-                w5 = 0.0
-            wp.atomic_add(droplet_mass, widx, i, w1 + w2 + w3 + w4 + w5)
+                w5 = wp.uint8(0)
+            wp.atomic_add(
+                droplet_mass,
+                widx,
+                i,
+                wp.float32(w1) / 255.0
+                + wp.float32(w2) / 255.0
+                + wp.float32(w3) / 255.0
+                + wp.float32(w4) / 255.0
+                + wp.float32(w5) / 255.0,
+            )
 
 
 @wp.kernel
