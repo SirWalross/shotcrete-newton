@@ -166,13 +166,13 @@ class Model:
         """World index for each particle, shape [particle_count], int. -1 for global."""
 
         self.voxel_wet = None
-        """Density of wet concrete, shape [voxel_count], float."""
+        """Density of wet concrete, shape [voxel_count], u8."""
         self.voxel_dry = None
-        """Density of dry concrete, shape [voxel_count], float."""
+        """Density of dry concrete, shape [voxel_count], u8."""
         self.voxel_distance = None
-        """Distance of voxel from float, shape [voxel_count], float."""
+        """Distance of voxel from float, shape [voxel_count], u8."""
         self.voxel_load = None
-        """Current load of the voxel, shape [voxel_count], float."""
+        """Current load of the voxel, shape [voxel_count], i16."""
         self.voxel_pos = None
         """Current transform of the voxel, shape [voxel_count], wp.vec3."""
         self.voxel_world = None

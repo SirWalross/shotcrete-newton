@@ -93,7 +93,7 @@ class SolverVoxel(SolverBase):
         s: int = 9,
         backtrack_count: int = 10,
         h: float = 0.005,
-        tc: float = 50.0,
+        tc: int = 5,
         k: int = 300,
         droplet_mass: float = 1.0 / 6.0,
         spray_velocity: float = 20.0,
@@ -107,7 +107,7 @@ class SolverVoxel(SolverBase):
         anisotropic_distance_weight: float = 2.8,
         shear_strength: float = 50.0,
         adhesion_strength: float = 20.0,
-        compression_strength: float = 2000.0,
+        compression_strength: float = 1285.0,
         wet_strength_penalty: float = 0.2,
         debug_mode: bool = False,
     ):
@@ -224,14 +224,15 @@ class SolverVoxel(SolverBase):
 
     @override
     def reset(self, state_out: State, world_indices: wp.array(dtype=int)):
-        self.model.voxel_wet[world_indices].fill_(0.0)
-        self.model.voxel_dry[world_indices].fill_(0.0)
-        self.model.voxel_distance[world_indices].fill_(1e6)
-        self.model.voxel_load[world_indices].fill_(0.0)
+        self.model.voxel_wet[world_indices].fill_(0)
+        self.model.voxel_dry[world_indices].fill_(0)
+        self.model.voxel_distance[world_indices].fill_(255)
+        self.model.voxel_load[world_indices].fill_(0)
         wp.launch(
             set_floor_kernel,
             dim=(world_indices.shape[0], self.shape[1], self.shape[2]),
             inputs=[
+                self.model.voxel_wet,
                 self.model.voxel_dry,
                 self.model.voxel_distance,
                 world_indices,
@@ -241,6 +242,7 @@ class SolverVoxel(SolverBase):
             set_wall_kernel,
             dim=(world_indices.shape[0], self.shape[1], self.shape[3]),
             inputs=[
+                self.model.voxel_wet,
                 self.model.voxel_dry,
                 self.model.voxel_distance,
                 world_indices,
@@ -393,7 +395,7 @@ class SolverVoxel(SolverBase):
         with wp.ScopedTimer("failure spread", active=self.active, synchronize=self.synchronize):
             wp.launch(
                 failure_spread_kernel,
-                dim=(self.shape[0], self.k, self.ball_indices.shape[0]),
+                dim=(self.ball_indices.shape[0], self.k, self.shape[0]),
                 inputs=[
                     self.model.voxel_wet,
                     self.model.voxel_dry,
@@ -483,9 +485,10 @@ class SolverVoxel(SolverBase):
             wp.launch(kernel=sum_kernel, dim=(self.shape[0], self.k), inputs=[self.ray_indices, self.avg_ray_index])
             wp.launch(
                 respreading_kernel,
-                dim=(self.shape[0], self.k, self.respreading_backtracking_amount),
+                dim=(self.respreading_backtracking_amount, self.k, self.shape[0]),
                 inputs=[
                     self.model.voxel_wet,
+                    self.model.voxel_dry,
                     self.sigma,
                     self.ray_indices,
                     self.positions,
@@ -525,7 +528,6 @@ class SolverVoxel(SolverBase):
                     self.ray_indices,
                     self.speed_distribution,
                     self.droplet_mass,
-                    self.total_droplet_mass,
                     LINEAR_SPACING,
                     self.h,
                 ],
@@ -604,10 +606,14 @@ class SolverVoxel(SolverBase):
                         outputs=[self.spray_neighbours, self.density, self.neighbour_count],
                     )
                 with wp.ScopedTimer("spray distribution", active=self.active, synchronize=self.synchronize):
-                    for _ in range(5):
+                    for i in range(10):
                         wp.launch(
                             spray_distribution_kernel,
-                            dim=self.spray_neighbours.shape,
+                            dim=[
+                                self.spray_neighbours.shape[1],
+                                self.spray_neighbours.shape[2],
+                                self.spray_neighbours.shape[0],
+                            ],
                             inputs=[
                                 self.model.voxel_wet,
                                 self.model.voxel_dry,
@@ -616,6 +622,8 @@ class SolverVoxel(SolverBase):
                                 self.spray_neighbours,
                                 self.droplet_mass,
                                 self.neighbour_count,
+                                self.i,
+                                i,
                             ],
                         )
             self.update_distances()
@@ -633,10 +641,14 @@ class SolverVoxel(SolverBase):
                 ],
                 outputs=[self.spray_neighbours, self.density, self.neighbour_count],
             )
-            for _ in range(5):
+            for i in range(10):
                 wp.launch(
                     spray_distribution_kernel,
-                    dim=self.spray_neighbours.shape,
+                    dim=[
+                        self.spray_neighbours.shape[1],
+                        self.spray_neighbours.shape[2],
+                        self.spray_neighbours.shape[0],
+                    ],
                     inputs=[
                         self.model.voxel_wet,
                         self.model.voxel_dry,
@@ -645,6 +657,8 @@ class SolverVoxel(SolverBase):
                         self.spray_neighbours,
                         self.rebound_droplet_mass,
                         self.neighbour_count,
+                        self.i,
+                        i,
                     ],
                 )
             self.update_rebound_distances()

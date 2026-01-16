@@ -17,6 +17,8 @@
 
 import warp as wp
 
+from newton._src.solvers.voxel.utils import total_density_is_smaller
+
 from .types import (
     GeoType,
 )
@@ -71,8 +73,8 @@ def ray_for_pixel(
 @wp.kernel
 def sensor_raycast_kernel(
     # Model
-    wet: wp.array4d(dtype=wp.float32),
-    dry: wp.array4d(dtype=wp.float32),
+    wet: wp.array4d(dtype=wp.uint8),
+    dry: wp.array4d(dtype=wp.uint8),
     voxel_world_idx: wp.array(dtype=wp.int32),
     world_indices: wp.array(dtype=wp.int32),
     # Camera parameters
@@ -125,9 +127,9 @@ def sensor_raycast_kernel(
             and pos[2] < wet.shape[3]
             and pos[2] >= 0
         ):
-            w = wp.float32(wet[widx, pos[0], pos[1], pos[2]])
-            d = wp.float32(dry[widx, pos[0], pos[1], pos[2]])
-            if (w + d) > 0.5:
+            w = wet[widx, pos[0], pos[1], pos[2]]
+            d = dry[widx, pos[0], pos[1], pos[2]]
+            if not total_density_is_smaller(w, d, 128):
                 t = i
                 break
 

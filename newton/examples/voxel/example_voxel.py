@@ -15,14 +15,14 @@ np.set_printoptions(threshold=sys.maxsize)
 
 @wp.kernel
 def extract_particles(
-    wet: wp.array4d(dtype=wp.float32), dry: wp.array4d(dtype=wp.float32), points: wp.array(dtype=wp.vec3)
+    wet: wp.array4d(dtype=wp.uint8), dry: wp.array4d(dtype=wp.uint8), points: wp.array(dtype=wp.vec3)
 ):
     widx, i, j, k = wp.tid()
     w = wet[widx, i, j, k]
     d = dry[widx, i, j, k]
     idx = widx * wet.shape[1] * wet.shape[2] * wet.shape[3] + i * wet.shape[3] + j * wet.shape[1] * wet.shape[3] + k
     p = points[idx]
-    if (w + d) > 0.5:
+    if w > 5:
         points[idx] = p + wp.where(p[0] < -1e3, wp.vec3f(1e4, 0.0, 0.0), wp.vec3f(0.0))
     else:
         points[idx] = p + wp.where(p[0] < -1e3, wp.vec3f(0.0), -wp.vec3f(1e4, 0.0, 0.0))
@@ -104,11 +104,11 @@ class Example:
         self.control = self.model.control()
         self.contacts = None
         self.rewards = newton.VoxelRewards(
-            (num_worlds, self.model.voxel_wet.shape[1] - 2, self.model.voxel_wet.shape[3] - 2), self.device
+            (num_worlds, self.model.voxel_wet.shape[1] - 2, self.model.voxel_wet.shape[2] - 2, self.model.voxel_wet.shape[3] - 2), 16, self.device
         )
 
         self.solver = newton.solvers.SolverVoxel(
-            self.model, mujoco_config={"solver_type": None, "disable_contacts": True}
+            self.model, tcp_body_name="ur10/ee_link"
         )
 
         self.viewer.set_model(self.model)
