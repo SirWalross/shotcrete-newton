@@ -110,23 +110,23 @@ def initialize_load_kernel(
     current_load[widx, i, j, k] = wp.where(
         is_wall(w, d),
         LOAD_MAX,
-        wp.where(total_density_is_smaller(w, d, DENSITY_HALF), wp.int16(DENSITY_ZERO), -wp.int16(w) - wp.int16(d)),
+        wp.where(total_density_is_smaller(w, d, DENSITY_HALF), wp.int16(DENSITY_ZERO), -(wp.int16(w) + wp.int16(d)) / wp.int16(10)),
     )
 
 
 @wp.func
 def compression_strength(wet: wp.float32, dry: wp.float32, wsp: wp.float32, cs: wp.float32) -> wp.int16:
-    return wp.int16((wet * wsp + dry) * cs)
+    return wp.int16(wp.min((wet * wsp + dry) * cs, 32766.0))
 
 
 @wp.func
 def shear_strength(wet: wp.float32, dry: wp.float32, wsp: wp.float32, ss: wp.float32) -> wp.int16:
-    return wp.int16((wet * wsp + dry) * ss)
+    return wp.int16(wp.min((wet * wsp + dry) * ss, 32766.0))
 
 
 @wp.func
 def adhesion_strength(wet: wp.float32, dry: wp.float32, wsp: wp.float32, as_: wp.float32) -> wp.int16:
-    return wp.int16((wet * wsp + dry) * as_)
+    return wp.int16(wp.min((wet * wsp + dry) * as_, 32766.0))
 
 
 @wp.func
@@ -248,7 +248,7 @@ def capacity_propagation_kernel(
                 d = dry[widx, indices[0], indices[1], indices[2]]
                 load = current_load[widx, indices[0], indices[1], indices[2]]
 
-                new_val = wp.min(load, strength(w, d, direction, wsp, cs, ss, as_)) - (wd + dd)
+                new_val = wp.min(load, strength(w, d, direction, wsp, cs, ss, as_)) - (wd + dd) / wp.int16(10)
 
                 current_load[widx, other[0], other[1], other[2]] = wp.max(
                     current_load[widx, other[0], other[1], other[2]], new_val
@@ -269,7 +269,7 @@ def failure_spread_kernel(
         if not total_density_is_smaller(
             wet[widx, pos[0], pos[1], pos[2]], dry[widx, pos[0], pos[1], pos[2]], DENSITY_HALF
         ):
-            dist = wp.int16((1.0 - 0.5 * wp.length(wp.vec3f(indices[j]))) * 25.0)
+            dist = wp.int16((1.0 - 0.5 * wp.length(wp.vec3f(indices[j]))) * 2.0)
             current_load[
                 widx,
                 positions[widx, i][0] + indices[j][0],
