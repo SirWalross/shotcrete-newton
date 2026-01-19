@@ -111,6 +111,7 @@ class SolverVoxel(SolverBase):
         wet_strength_penalty: float = 0.2,
         debug_mode: bool = False,
         adhesion_check_freq: int = 10,
+        update_joints_and_bodies: bool = False,
     ):
         super().__init__(model=model)
 
@@ -173,6 +174,7 @@ class SolverVoxel(SolverBase):
             np.tile(np.array([[100000, 100000, 100000, 0, 0, 0]]), (self.shape[0], 1)), dtype=wp.int32
         )
         self.adhesion_check_freq = adhesion_check_freq
+        self.update_joints_and_bodies = update_joints_and_bodies
 
     @override
     def step(
@@ -180,7 +182,10 @@ class SolverVoxel(SolverBase):
     ):
         with wp.ScopedTimer("step", active=self.active, synchronize=self.synchronize):
             wp.launch(
-                update_cond_kernel, dim=1, inputs=[self.i, self.drip_vel, self.adhesion_check_freq], outputs=[self.drip_cond, self.adhesion_cond]
+                update_cond_kernel,
+                dim=1,
+                inputs=[self.i, self.drip_vel, self.adhesion_check_freq],
+                outputs=[self.drip_cond, self.adhesion_cond],
             )
             wp.launch(reset_bbox_kernel, dim=(self.shape[0],), outputs=[self.spray_bbox])
             with wp.ScopedTimer("spraying", active=self.active, synchronize=self.synchronize):
@@ -204,24 +209,27 @@ class SolverVoxel(SolverBase):
                 inputs=[state_in.body_q],
                 outputs=[state_out.body_q],
             )
-            # wp.launch(
-            #     update_robot_position_kernel,
-            #     dim=state_in.joint_q.shape,
-            #     inputs=[
-            #         state_in.joint_q,
-            #         state_in.joint_qd,
-            #         state_in.joint_q.shape[0] // self.model.num_worlds,
-            #         self.model.joint_velocity_limit,
-            #         control.joint_target_pos,
-            #         control.joint_target_vel,
-            #         dt,
-            #     ],
-            #     outputs=[
-            #         state_out.joint_q,
-            #         state_out.joint_qd,
-            #     ],
-            # )
-            # newton.eval_fk(self.model, state_out.joint_q, state_out.joint_qd, state_out)
+            if self.update_joints_and_bodies:
+                with wp.ScopedTimer("robot position update", active=self.active, synchronize=self.synchronize):
+                    wp.launch(
+                        update_robot_position_kernel,
+                        dim=state_in.joint_q.shape,
+                        inputs=[
+                            state_in.joint_q,
+                            state_in.joint_qd,
+                            state_in.joint_q.shape[0] // self.model.num_worlds,
+                            self.model.joint_velocity_limit,
+                            control.joint_target_pos,
+                            control.joint_target_vel,
+                            dt,
+                        ],
+                        outputs=[
+                            state_out.joint_q,
+                            state_out.joint_qd,
+                        ],
+                    )
+                with wp.ScopedTimer("newton fk", active=self.active, synchronize=self.synchronize):
+                    newton.eval_fk(self.model, state_out.joint_q, state_out.joint_qd, state_out)
         return state_out
 
     @override
