@@ -110,6 +110,7 @@ class SolverVoxel(SolverBase):
         compression_strength: float = 1285.0,
         wet_strength_penalty: float = 0.2,
         debug_mode: bool = False,
+        adhesion_check_freq: int = 10,
     ):
         super().__init__(model=model)
 
@@ -171,6 +172,7 @@ class SolverVoxel(SolverBase):
         self.global_bbox = wp.array(
             np.tile(np.array([[100000, 100000, 100000, 0, 0, 0]]), (self.shape[0], 1)), dtype=wp.int32
         )
+        self.adhesion_check_freq = adhesion_check_freq
 
     @override
     def step(
@@ -178,7 +180,7 @@ class SolverVoxel(SolverBase):
     ):
         with wp.ScopedTimer("step", active=self.active, synchronize=self.synchronize):
             wp.launch(
-                update_cond_kernel, dim=1, inputs=[self.i, self.drip_vel], outputs=[self.drip_cond, self.adhesion_cond]
+                update_cond_kernel, dim=1, inputs=[self.i, self.drip_vel, self.adhesion_check_freq], outputs=[self.drip_cond, self.adhesion_cond]
             )
             wp.launch(reset_bbox_kernel, dim=(self.shape[0],), outputs=[self.spray_bbox])
             with wp.ScopedTimer("spraying", active=self.active, synchronize=self.synchronize):
