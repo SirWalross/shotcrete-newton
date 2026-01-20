@@ -204,7 +204,14 @@ class SolverVoxel(SolverBase):
                 wp.launch(
                     drip_kernel,
                     dim=(self.shape[0], self.shape[1] - 2, self.shape[2] - 2),
-                    inputs=[self.model.voxel_wet, self.model.voxel_dry, self.model.voxel_distance, self.shape[3] - 2, self.i, self.drip_vel],
+                    inputs=[
+                        self.model.voxel_wet,
+                        self.model.voxel_dry,
+                        self.model.voxel_distance,
+                        self.shape[3] - 2,
+                        self.i,
+                        self.drip_vel,
+                    ],
                 )
             self.update_rewards(rewards)
             wp.launch(
@@ -595,10 +602,10 @@ class SolverVoxel(SolverBase):
                     outputs=[self.spray_overlap],
                 )
             with wp.ScopedTimer("spray redistribution loop", active=self.active, synchronize=self.synchronize):
-                for _ in range(5):
+                for _ in range(10):
                     wp.launch(
                         spray_redistribution_kernel,
-                        dim=(self.shape[0], self.k),
+                        dim=(self.k, self.shape[0]),
                         inputs=[
                             self.ray_trajectory[:, :, 0],
                             self.spray_overlap,
@@ -623,29 +630,26 @@ class SolverVoxel(SolverBase):
                             self.ball_indices,
                             self.ray_trajectory[:, :, k],
                         ],
-                        outputs=[self.spray_neighbours, self.density, self.neighbour_count],
+                        outputs=[self.spray_neighbours, self.density],
                     )
                 with wp.ScopedTimer("spray distribution", active=self.active, synchronize=self.synchronize):
-                    for i in range(10):
-                        wp.launch(
-                            spray_distribution_kernel,
-                            dim=[
-                                self.spray_neighbours.shape[1],
-                                self.spray_neighbours.shape[2],
-                                self.spray_neighbours.shape[0],
-                            ],
-                            inputs=[
-                                self.model.voxel_wet,
-                                self.model.voxel_dry,
-                                self.ball_indices,
-                                self.ray_trajectory[:, :, k],
-                                self.spray_neighbours,
-                                self.droplet_mass,
-                                self.neighbour_count,
-                                self.i,
-                                i,
-                            ],
-                        )
+                    wp.launch(
+                        spray_distribution_kernel,
+                        dim=[
+                            self.spray_neighbours.shape[1],
+                            self.spray_neighbours.shape[0],
+                        ],
+                        inputs=[
+                            self.model.voxel_wet,
+                            self.model.voxel_dry,
+                            self.ball_indices,
+                            self.ray_trajectory[:, :, k],
+                            self.droplet_mass,
+                            self.spray_neighbours,
+                            self.density,
+                            self.i,
+                        ],
+                    )
             self.update_distances()
         with wp.ScopedTimer("spray backtrack deposit", active=self.active, synchronize=self.synchronize):
             self.density.zero_()
@@ -659,28 +663,25 @@ class SolverVoxel(SolverBase):
                     self.ball_indices,
                     self.ray_rebound_trajectory[:, :, 0],
                 ],
-                outputs=[self.spray_neighbours, self.density, self.neighbour_count],
+                outputs=[self.spray_neighbours, self.density],
             )
-            for i in range(10):
-                wp.launch(
-                    spray_distribution_kernel,
-                    dim=[
-                        self.spray_neighbours.shape[1],
-                        self.spray_neighbours.shape[2],
-                        self.spray_neighbours.shape[0],
-                    ],
-                    inputs=[
-                        self.model.voxel_wet,
-                        self.model.voxel_dry,
-                        self.ball_indices,
-                        self.ray_rebound_trajectory[:, :, 0],
-                        self.spray_neighbours,
-                        self.rebound_droplet_mass,
-                        self.neighbour_count,
-                        self.i,
-                        i,
-                    ],
-                )
+            wp.launch(
+                spray_distribution_kernel,
+                dim=[
+                    self.spray_neighbours.shape[1],
+                    self.spray_neighbours.shape[0],
+                ],
+                inputs=[
+                    self.model.voxel_wet,
+                    self.model.voxel_dry,
+                    self.ball_indices,
+                    self.ray_rebound_trajectory[:, :, 0],
+                    self.rebound_droplet_mass,
+                    self.spray_neighbours,
+                    self.density,
+                    self.i,
+                ],
+            )
             self.update_rebound_distances()
         with wp.ScopedTimer("update bbox", active=self.active, synchronize=self.synchronize):
             wp.launch(

@@ -626,20 +626,20 @@ def spray_redistribution_kernel(
     anisotropic_distance_weight: wp.array(dtype=wp.float32),
     k: wp.int32,
 ):
-    widx, i = wp.tid()
+    i, widx = wp.tid()
     direction = wp.transform_vector(transforms[widx], wp.vec3f(1.0, 0.0, 0.0))
     my_overlap = overlap[widx, i]
     for j in range(k):
-        dist = anisotropic_distance(
-            wp.vec3f(voxels[widx, i]), wp.vec3f(voxels[widx, j]), direction, anisotropic_distance_weight[widx]
-        )
         other_overlap = overlap[widx, j]
         if other_overlap > my_overlap:
+            dist = anisotropic_distance(
+                wp.vec3f(voxels[widx, i]), wp.vec3f(voxels[widx, j]), direction, anisotropic_distance_weight[widx]
+            )
             ij_overlap = relu(((overlap_distance[widx] / 4.0) - dist) / (overlap_distance[widx] / 4.0))
             # move mass from partner
-            m = mass[widx, j] * (overlap[widx, j] - overlap[widx, i]) / overlap[widx, j] * 0.4 * ij_overlap
-            wp.atomic_sub(mass, widx, j, m)
-            wp.atomic_add(mass, widx, i, m)
+            diff = relu(mass[widx, j]) * (overlap[widx, j] - overlap[widx, i]) / overlap[widx, j] * 0.05 * ij_overlap
+            mass[widx, j] -= diff
+            mass[widx, i] += diff
 
 
 @wp.kernel
@@ -650,7 +650,6 @@ def spray_neighbours_kernel(
     voxels: wp.array2d(dtype=wp.vec3i),
     spray_neighbours: wp.array3d(dtype=wp.float32),
     density: wp.array2d(dtype=wp.float32),
-    neighbour_count: wp.array2d(dtype=wp.float32),
 ):
     widx, i, j = wp.tid()
     pos = wp.vec3i(
@@ -691,7 +690,6 @@ def spray_neighbours_kernel(
         or not total_density_is_smaller(w, d, DENSITY_HALF)
     )
     wp.atomic_add(density, widx, i, spray_neighbours[widx, i, j])
-    wp.atomic_add(neighbour_count, widx, i, wp.float32(spray_neighbours[widx, i, j] != 0.0))
 
 
 @wp.kernel
@@ -700,38 +698,44 @@ def spray_distribution_kernel(
     dry: wp.array4d(dtype=wp.uint8),
     ball_indices: wp.array(dtype=wp.vec3i),
     voxels: wp.array2d(dtype=wp.vec3i),
-    spray_neighbours: wp.array3d(dtype=wp.float32),
     remaining_mass: wp.array2d(dtype=wp.float32),
-    neighbour_count: wp.array2d(dtype=wp.float32),
+    spray_neighbours: wp.array3d(dtype=wp.float32),
+    density: wp.array2d(dtype=wp.float32),
     seed: wp.array(dtype=wp.int32),
-    seed2: wp.int32,
 ):
-    i, j, widx = wp.tid()
+    i, widx = wp.tid()
 
-    weight = spray_neighbours[widx, i, j]
-    if weight <= 0.0:
+    m = relu(remaining_mass[widx, i])
+    if m <= 0.0:
         return
 
-    pos = voxels[widx, i] + ball_indices[j]
-    if not valid_pos(pos, wet.shape):
+    rem = m
+    density_ = density[widx, i]
+    if density_ <= 0.0:
         return
-    w = wet[widx, pos[0], pos[1], pos[2]]
-    d = dry[widx, pos[0], pos[1], pos[2]]
-    if total_density_is_smaller(w, d, DENSITY_MAX):
-        w_f32 = wp.float32(w) / DENSITY_MAX_F32
-        d_f32 = wp.float32(d) / DENSITY_MAX_F32
-        state = wp.rand_init(wp.int32(wp.rand_init(seed[0], seed2)), wp.int32(wp.rand_init(i, j)))
-        diff = (
-            wp.min(
-                (relu(remaining_mass[widx, i]) / (neighbour_count[widx, i] + 1.0)) * wp.float32(weight != 0.0) * 0.5,
-                relu(1.0 - w_f32 - d_f32),
+
+    for j in range(ball_indices.shape[0]):
+        pos = voxels[widx, i] + ball_indices[j]
+        if not valid_pos(pos, wet.shape):
+            continue
+        w = wet[widx, pos[0], pos[1], pos[2]]
+        d = dry[widx, pos[0], pos[1], pos[2]]
+        if total_density_is_smaller(w, d, DENSITY_MAX):
+            w_f32 = wp.float32(w) / DENSITY_MAX_F32
+            d_f32 = wp.float32(d) / DENSITY_MAX_F32
+            state = wp.rand_init(seed[0], j)
+            diff = (
+                wp.min(
+                    m * spray_neighbours[widx, i, j] / density[widx, i],
+                    relu(1.0 - w_f32 - d_f32),
+                )
+                * DENSITY_MAX_F32
             )
-            * DENSITY_MAX_F32
-        )
-        diff = wp.where((diff - wp.floor(diff)) > wp.randf(state), wp.ceil(diff), wp.floor(diff))
-        wet[widx, pos[0], pos[1], pos[2]] += wp.uint8(diff)
-        if wp.uint8(diff) != DENSITY_ZERO:
-            wp.atomic_sub(remaining_mass, widx, i, wp.floor(diff) / DENSITY_MAX_F32)
+            diff = wp.where((diff - wp.floor(diff)) > wp.randf(state), wp.ceil(diff), wp.floor(diff))
+            if wp.uint8(diff) != DENSITY_ZERO:
+                wet[widx, pos[0], pos[1], pos[2]] = saturating_add(wp.uint8(diff), wet[widx, pos[0], pos[1], pos[2]])
+                rem -= diff / DENSITY_MAX_F32
+    remaining_mass[widx, i] = rem
 
 
 @wp.kernel
