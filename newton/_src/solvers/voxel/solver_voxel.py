@@ -118,23 +118,23 @@ class SolverVoxel(SolverBase):
         self.active = debug_mode
         self.synchronize = debug_mode
 
+        self.shape = self.model.voxel_wet.shape
         self.h = h
-        self.tc = tc
         self.k = k
         self.backtrack_count = backtrack_count
-        self.shape = self.model.voxel_wet.shape
-        self.total_droplet_mass = droplet_mass
-        self.sigma = sigma
-        self.drip_vel = drip_vel
         self.respreading_backtracking_amount = respreading_backtracking_amount
-        self.rebound_opening_angle = rebound_opening_angle
-        self.nozzle_opening_angle = nozzle_opening_angle
-        self.overlap_distance = overlap_distance
-        self.anisotropic_distance_weight = anisotropic_distance_weight
-        self.shear_strength = shear_strength
-        self.adhesion_strength = adhesion_strength
-        self.compression_strength = compression_strength
-        self.wet_strength_penalty = wet_strength_penalty
+        self.tc = wp.full((self.shape[0],), tc, dtype=wp.uint8)
+        self.total_droplet_mass = wp.full((self.shape[0],), droplet_mass, dtype=wp.float32)
+        self.sigma = wp.full((self.shape[0],), sigma, dtype=wp.float32)
+        self.drip_vel = wp.full((self.shape[0],), drip_vel, dtype=wp.int32)
+        self.rebound_opening_angle = wp.full((self.shape[0],), rebound_opening_angle, dtype=wp.float32)
+        self.nozzle_opening_angle = wp.full((self.shape[0],), nozzle_opening_angle, dtype=wp.float32)
+        self.overlap_distance = wp.full((self.shape[0],), overlap_distance, dtype=wp.float32)
+        self.anisotropic_distance_weight = wp.full((self.shape[0],), anisotropic_distance_weight, dtype=wp.float32)
+        self.shear_strength = wp.full((self.shape[0],), shear_strength, dtype=wp.float32)
+        self.adhesion_strength = wp.full((self.shape[0],), adhesion_strength, dtype=wp.float32)
+        self.compression_strength = wp.full((self.shape[0],), compression_strength, dtype=wp.float32)
+        self.wet_strength_penalty = wp.full((self.shape[0],), wet_strength_penalty, dtype=wp.float32)
 
         self.ball_indices = wp.array(get_sphere_indices(s // 2), dtype=wp.vec3i)
         self.positions = wp.zeros((self.shape[0], self.k), dtype=wp.vec3i)
@@ -154,12 +154,12 @@ class SolverVoxel(SolverBase):
         # find indices for the end-effector bodies in the different envs
         self.ee_body_indices = wp.array(
             [i for i, key in enumerate(self.model.body_key) if re.match(f"/World/envs/env_.*/{tcp_body_name}", key)],
+            # np.arange(self.shape[0]) * (len(self.model.body_key) / self.shape[0]) + 7,
             dtype=int,
         )
         assert self.ee_body_indices.shape[0] == self.shape[0], "Number of end-effectors does not match number of envs"
 
         self.i = wp.zeros(1, dtype=int)
-        self.drip_cond = wp.zeros(1, dtype=int)
         self.adhesion_cond = wp.zeros(1, dtype=int)
         self.ray_indices = wp.zeros((self.shape[0], self.k), dtype=wp.int32)
         self.rebound_droplet_mass = wp.zeros((self.shape[0], self.k), dtype=wp.float32)
@@ -184,8 +184,8 @@ class SolverVoxel(SolverBase):
             wp.launch(
                 update_cond_kernel,
                 dim=1,
-                inputs=[self.i, self.drip_vel, self.adhesion_check_freq],
-                outputs=[self.drip_cond, self.adhesion_cond],
+                inputs=[self.i, self.adhesion_check_freq],
+                outputs=[self.adhesion_cond],
             )
             wp.launch(reset_bbox_kernel, dim=(self.shape[0],), outputs=[self.spray_bbox])
             with wp.ScopedTimer("spraying", active=self.active, synchronize=self.synchronize):
@@ -201,7 +201,11 @@ class SolverVoxel(SolverBase):
                     inputs=[self.model.voxel_wet, self.model.voxel_dry, self.tc, self.global_bbox],
                 )
             with wp.ScopedTimer("drip", active=self.active, synchronize=self.synchronize):
-                wp.capture_if(self.drip_cond, on_true=self.drip)
+                wp.launch(
+                    drip_kernel,
+                    dim=(self.shape[0], self.shape[1] - 2, self.shape[2] - 2),
+                    inputs=[self.model.voxel_wet, self.model.voxel_dry, self.model.voxel_distance, self.shape[3] - 2, self.i, self.drip_vel],
+                )
             self.update_rewards(rewards)
             wp.launch(
                 update_body_positions_kernel,
@@ -276,13 +280,6 @@ class SolverVoxel(SolverBase):
                     inputs=[self.model.voxel_wet, self.ray_trajectory],
                     outputs=[rewards.out_of_bounds_spray],
                 )
-
-    def drip(self):
-        wp.launch(
-            drip_kernel,
-            dim=(self.shape[0], self.shape[1] - 2, self.shape[2] - 2),
-            inputs=[self.model.voxel_wet, self.model.voxel_dry, self.model.voxel_distance, self.shape[3] - 2],
-        )
 
     def adhesion_check(self, rewards: VoxelRewards):
         self.model.voxel_load.zero_()

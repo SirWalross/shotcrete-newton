@@ -82,15 +82,16 @@ class Example:
 
         self.model = builder.finalize()
 
-        dry = np.zeros_like(distance, dtype=np.float32)
-        dry[:, :, :, :7] = 10.0
-        distance[:, :, :, :7] = 0.0
-        dry[:, :, -8:, :] = 10.0
-        distance[:, :, -8:, :] = 0.0
-        self.model.voxel_dry = wp.array(dry, dtype=wp.float32, device=self.device)
-        self.model.voxel_distance = wp.array(distance, dtype=wp.float32, device=self.device)
+        dry = np.zeros_like(distance, dtype=np.uint8)
+        # dry[:, :, :, :7] = 10.0
+        # distance[:, :, :, :7] = 0.0
+        # dry[:, :, -8:, :] = 10.0
+        # distance[:, :, -8:, :] = 0.0
+        self.model.voxel_dry = wp.array(dry, dtype=wp.uint8, device=self.device)
+        self.model.voxel_distance = wp.array(distance, dtype=wp.uint8, device=self.device)
         self.model.voxel_wet = wp.zeros_like(self.model.voxel_dry, device=self.device)
-        self.model.voxel_load = wp.zeros_like(self.model.voxel_dry, device=self.device)
+        self.model.voxel_load = wp.zeros(self.model.voxel_dry.shape, dtype=wp.int16, device=self.device)
+        self.model.voxel_pos = wp.zeros((self.model.voxel_dry.shape[0],), dtype=wp.vec3f, device=self.device)
         transforms = wp.clone(self.model.body_q[::8]).numpy()
         transforms[:, 1] += 0.7
         self.model.voxel_transform = wp.array(transforms, device=self.device, dtype=wp.transform)
@@ -145,7 +146,7 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-worlds", type=int, default=2, help="Total number of simulated worlds.")
+    parser.add_argument("--num-worlds", type=int, default=4, help="Total number of simulated worlds.")
 
     viewer, args = newton.examples.init(parser)
 

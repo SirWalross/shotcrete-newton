@@ -31,14 +31,11 @@ LOAD_MAX = wp.int16(32767)
 @wp.kernel
 def update_cond_kernel(
     i: wp.array(dtype=int),
-    drip_vel: int,
     adhesion_check_freq: int,
-    drip: wp.array(dtype=int),
     adhesion_check: wp.array(dtype=int),
 ):
     if adhesion_check_freq != -1:
         adhesion_check[0] = wp.int32(i[0] % adhesion_check_freq == 0)
-    drip[0] = wp.int32(i[0] % drip_vel == 0)
     i[0] = i[0] + 1
 
 
@@ -46,7 +43,7 @@ def update_cond_kernel(
 def solidify_kernel(
     wet: wp.array4d(dtype=wp.uint8),
     dry: wp.array4d(dtype=wp.uint8),
-    tc: wp.uint8,
+    tc: wp.array(dtype=wp.uint8),
     bbox: wp.array2d(dtype=wp.int32),
 ):
     widx, i, j, k = wp.tid()
@@ -68,7 +65,7 @@ def solidify_kernel(
 
     # calculate part that solidifes
     w = saturating_add(w, d) - d
-    diff = wp.min(w, tc)
+    diff = wp.min(w, tc[widx])
 
     # account for if (w + d) > DENSITY_MAX
     wet[widx, i, j, k] = saturating_sub(w - diff, overflow_part(w, d))
@@ -234,10 +231,10 @@ def capacity_propagation_kernel(
     offset: wp.int32,
     length: wp.int32,
     direction: wp.vec3i,
-    wsp: wp.float32,
-    cs: wp.float32,
-    ss: wp.float32,
-    as_: wp.float32,
+    wsp: wp.array(dtype=wp.float32),
+    cs: wp.array(dtype=wp.float32),
+    ss: wp.array(dtype=wp.float32),
+    as_: wp.array(dtype=wp.float32),
 ):
     widx, i, j, k = wp.tid()
     for l in range(length):
@@ -257,7 +254,9 @@ def capacity_propagation_kernel(
                 d = dry[widx, indices[0], indices[1], indices[2]]
                 load = current_load[widx, indices[0], indices[1], indices[2]]
 
-                new_val = wp.min(load, strength(w, d, direction, wsp, cs, ss, as_)) - (wd + dd) / wp.int16(10)
+                new_val = wp.min(load, strength(w, d, direction, wsp[widx], cs[widx], ss[widx], as_[widx])) - (
+                    wd + dd
+                ) / wp.int16(10)
 
                 current_load[widx, other[0], other[1], other[2]] = wp.max(
                     current_load[widx, other[0], other[1], other[2]], new_val
@@ -293,8 +292,13 @@ def drip_kernel(
     dry: wp.array4d(dtype=wp.uint8),
     distance: wp.array4d(dtype=wp.uint8),
     max_z: wp.int32,
+    index: wp.array(dtype=wp.int32),
+    drip_vel: wp.array(dtype=wp.int32),
 ):
     widx, i, j = wp.tid()
+
+    if index[0] % drip_vel[widx] != 0:
+        return
 
     ii = i + 1
     jj = j + 1
@@ -424,7 +428,7 @@ def sum_kernel(data: wp.array2d(dtype=wp.int32), out_sum: wp.array(dtype=wp.int3
 def respreading_kernel(
     wet: wp.array4d(dtype=wp.uint8),
     dry: wp.array4d(dtype=wp.uint8),
-    sigma: wp.float32,
+    sigma: wp.array(dtype=wp.float32),
     ray_index: wp.array2d(dtype=wp.int32),
     ray_pos: wp.array2d(dtype=wp.vec3i),
     ray_dir: wp.array2d(dtype=wp.vec3),
@@ -587,13 +591,17 @@ def spray_backtrack_kernel(
 
 @wp.kernel
 def spray_overlap_kernel(
-    voxels: wp.array2d(dtype=wp.vec3i), overlap_distance: wp.float32, k: wp.int32, overlap: wp.array2d(dtype=wp.float32)
+    voxels: wp.array2d(dtype=wp.vec3i),
+    overlap_distance: wp.array(dtype=wp.float32),
+    k: wp.int32,
+    overlap: wp.array2d(dtype=wp.float32),
 ):
     widx, i = wp.tid()
     value = wp.float32(-1.0)
     for j in range(k):
         value += relu(
-            (overlap_distance - wp.length(wp.vec3f(voxels[widx, i]) - wp.vec3f(voxels[widx, j]))) / overlap_distance
+            (overlap_distance[widx] - wp.length(wp.vec3f(voxels[widx, i]) - wp.vec3f(voxels[widx, j])))
+            / overlap_distance[widx]
         )
     overlap[widx, i] = (value / wp.float32(k) * 2.0) * (value / wp.float32(k) * 2.0) * (value / wp.float32(k) * 2.0)
 
@@ -614,8 +622,8 @@ def spray_redistribution_kernel(
     overlap: wp.array2d(dtype=wp.float32),
     mass: wp.array2d(dtype=wp.float32),
     transforms: wp.array(dtype=wp.transform),
-    overlap_distance: wp.float32,
-    anisotropic_distance_weight: wp.float32,
+    overlap_distance: wp.array(dtype=wp.float32),
+    anisotropic_distance_weight: wp.array(dtype=wp.float32),
     k: wp.int32,
 ):
     widx, i = wp.tid()
@@ -623,11 +631,11 @@ def spray_redistribution_kernel(
     my_overlap = overlap[widx, i]
     for j in range(k):
         dist = anisotropic_distance(
-            wp.vec3f(voxels[widx, i]), wp.vec3f(voxels[widx, j]), direction, anisotropic_distance_weight
+            wp.vec3f(voxels[widx, i]), wp.vec3f(voxels[widx, j]), direction, anisotropic_distance_weight[widx]
         )
         other_overlap = overlap[widx, j]
         if other_overlap > my_overlap:
-            ij_overlap = relu(((overlap_distance / 4.0) - dist) / (overlap_distance / 4.0))
+            ij_overlap = relu(((overlap_distance[widx] / 4.0) - dist) / (overlap_distance[widx] / 4.0))
             # move mass from partner
             m = mass[widx, j] * (overlap[widx, j] - overlap[widx, i]) / overlap[widx, j] * 0.4 * ij_overlap
             wp.atomic_sub(mass, widx, j, m)
@@ -728,11 +736,11 @@ def spray_distribution_kernel(
 
 @wp.kernel
 def randomize_directions_kernel(
-    ray_dir: wp.array2d(dtype=wp.vec3), opening_angle: wp.float32, seed: wp.array(dtype=wp.int32)
+    ray_dir: wp.array2d(dtype=wp.vec3), opening_angle: wp.array(dtype=wp.float32), seed: wp.array(dtype=wp.int32)
 ):
     widx, i = wp.tid()
     state = wp.rand_init(seed[0], i)
-    z = wp.cos(opening_angle) + wp.randf(state) * (1.0 - wp.cos(opening_angle))
+    z = wp.cos(opening_angle[widx]) + wp.randf(state) * (1.0 - wp.cos(opening_angle[widx]))
     phi = wp.randf(state) * wp.pi * 2.0
     ray_dir[widx, i] = vector_in_cone(z, phi, ray_dir[widx, i])
 
@@ -756,10 +764,10 @@ def vector_in_cone(z: wp.float32, phi: wp.float32, direction: wp.vec3f) -> wp.ve
 
 @wp.kernel
 def update_directions_kernel(
-    nozzle_angle: wp.float32,
+    nozzle_angle: wp.array(dtype=wp.float32),
     ee_transforms: wp.array(dtype=wp.transform),
     voxel_pos: wp.array(dtype=wp.vec3f),
-    droplet_mass: wp.float32,
+    droplet_mass: wp.array(dtype=wp.float32),
     seed: wp.array(dtype=wp.int32),
     k: wp.int32,
     h: wp.float32,
@@ -769,14 +777,14 @@ def update_directions_kernel(
     mass: wp.array2d(dtype=wp.float32),
 ):
     widx, i = wp.tid()
-    z = 1.0 - (1.0 - wp.cos(nozzle_angle)) * (wp.float32(i) + 0.5) / wp.float32(k)
+    z = 1.0 - (1.0 - wp.cos(nozzle_angle[widx])) * (wp.float32(i) + 0.5) / wp.float32(k)
     state = wp.rand_init(seed[0])
     phi = wp.float32(i) * wp.pi * (3.0 - wp.sqrt(5.0)) + wp.randf(state, 0.0, wp.pi * 2.0)
     positions[widx, i] = wp.vec3i((wp.transform_get_translation(ee_transforms[widx]) - voxel_pos[widx]) / h) + wp.vec3i(
         width // 2, 0, 0
     )
     directions[widx, i] = vector_in_cone(z, phi, wp.transform_vector(ee_transforms[widx], wp.vec3f(1.0, 0.0, 0.0)))
-    mass[widx, i] = mass_ratio(wp.acos(z) / nozzle_angle) * droplet_mass
+    mass[widx, i] = mass_ratio(wp.acos(z) / nozzle_angle[widx]) * droplet_mass[widx]
 
 
 @wp.func
