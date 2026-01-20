@@ -264,6 +264,19 @@ class SolverVoxel(SolverBase):
         )
         wp.launch(reset_global_bbox_kernel, dim=(world_indices.shape[0],), inputs=[self.global_bbox, world_indices])
 
+    @override
+    def update_parameters(self, env_indices: wp.array, **kwargs):
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                if isinstance(value, wp.array):
+                    self.__dict__[key][env_indices].assign(value)
+                elif not isinstance(self.__dict__[key], wp.array):
+                    self.__dict__[key] = value
+                else:
+                    self.__dict__[key][env_indices].fill_(value)
+            else:
+                raise AttributeError(f"SolverVoxel has no attribute '{key}'")
+
     def update_rewards(self, rewards: VoxelRewards):
         with wp.ScopedTimer("rewards", active=self.active, synchronize=self.synchronize):
             with wp.ScopedTimer("spray reward calculation", active=self.active, synchronize=self.synchronize):

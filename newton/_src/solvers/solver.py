@@ -277,6 +277,16 @@ class SolverBase:
         """
         raise NotImplementedError()
 
+    def update_parameters(self, world_indices: wp.array, **kwargs) -> None:
+        """
+        Update solver parameters.
+
+        Args:
+            world_indices (wp.array): The indices of the worlds to update.
+            **kwargs: Arbitrary keyword arguments for solver parameters.
+        """
+        raise NotImplementedError()
+
     def notify_model_changed(self, flags: int):
         """Notify the solver that parts of the :class:`~newton.Model` were modified.
 
