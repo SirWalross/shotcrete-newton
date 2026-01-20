@@ -30,7 +30,11 @@ LOAD_MAX = wp.int16(32767)
 
 @wp.kernel
 def update_cond_kernel(
-    i: wp.array(dtype=int), drip_vel: int, adhesion_check_freq: int, drip: wp.array(dtype=int), adhesion_check: wp.array(dtype=int)
+    i: wp.array(dtype=int),
+    drip_vel: int,
+    adhesion_check_freq: int,
+    drip: wp.array(dtype=int),
+    adhesion_check: wp.array(dtype=int),
 ):
     if adhesion_check_freq != -1:
         adhesion_check[0] = wp.int32(i[0] % adhesion_check_freq == 0)
@@ -111,7 +115,11 @@ def initialize_load_kernel(
     current_load[widx, i, j, k] = wp.where(
         is_wall(w, d),
         LOAD_MAX,
-        wp.where(total_density_is_smaller(w, d, DENSITY_HALF), wp.int16(DENSITY_ZERO), -(wp.int16(w) + wp.int16(d)) / wp.int16(10)),
+        wp.where(
+            total_density_is_smaller(w, d, DENSITY_HALF),
+            wp.int16(DENSITY_ZERO),
+            -(wp.int16(w) + wp.int16(d)) / wp.int16(10),
+        ),
     )
 
 
@@ -797,13 +805,13 @@ def spray_reward_kernel(
     hit = wp.bool(False)
 
     if i < bbox[widx, 0] - 2 or i > bbox[widx, 3] + 2 or k < bbox[widx, 2] - 2 or k > bbox[widx, 5] + 2:
-        wp.atomic_add(height, widx, i // decimation, k // decimation, wp.float32(wet.shape[2] - 2) * h)
+        wp.atomic_add(height, widx, i // decimation, k // decimation, 0.0)
         wp.atomic_add(
             height_sq,
             widx,
             i // decimation,
             k // decimation,
-            wp.float32(wet.shape[2] - 2) * h * wp.float32(wet.shape[2] - 2) * h,
+            0.0,
         )
         return
 
@@ -813,8 +821,14 @@ def spray_reward_kernel(
         w = wet[widx, i + 1, j, k + 1]
         d = dry[widx, i + 1, j, k + 1]
         if not hit and not total_density_is_smaller(w, d, DENSITY_HALF):
-            wp.atomic_add(height, widx, i // decimation, k // decimation, wp.float32(j) * h)
-            wp.atomic_add(height_sq, widx, i // decimation, k // decimation, wp.float32(j) * h * wp.float32(j) * h)
+            wp.atomic_add(height, widx, i // decimation, k // decimation, wp.float32(wet.shape[2] - j - 2) * h)
+            wp.atomic_add(
+                height_sq,
+                widx,
+                i // decimation,
+                k // decimation,
+                wp.float32(wet.shape[2] - j - 1) * h * wp.float32(wet.shape[2] - j - 2) * h,
+            )
             hit = True
         if hit:
             local_gap += relu(1.0 - wp.float32(w) - wp.float32(d))

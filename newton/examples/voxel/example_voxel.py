@@ -104,12 +104,17 @@ class Example:
         self.control = self.model.control()
         self.contacts = None
         self.rewards = newton.VoxelRewards(
-            (num_worlds, self.model.voxel_wet.shape[1] - 2, self.model.voxel_wet.shape[2] - 2, self.model.voxel_wet.shape[3] - 2), 16, self.device
+            (
+                num_worlds,
+                self.model.voxel_wet.shape[1] - 2,
+                self.model.voxel_wet.shape[2] - 2,
+                self.model.voxel_wet.shape[3] - 2,
+            ),
+            16,
+            self.device,
         )
 
-        self.solver = newton.solvers.SolverVoxel(
-            self.model, tcp_body_name="ur10/ee_link"
-        )
+        self.solver = newton.solvers.SolverVoxel(self.model, tcp_body_name="ur10/ee_link")
 
         self.viewer.set_model(self.model)
 

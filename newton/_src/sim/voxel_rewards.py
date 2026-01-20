@@ -19,15 +19,15 @@ class VoxelRewards:
 
     def step(self):
         self.prev_distance = wp.clone(self.distance)
-        self.distance.fill_(0.0)
+        self.distance.zero_()
         self.smoothness.zero_()
         self.air_gap.zero_()
         self.adhesion_failure_amount.zero_()
         self.out_of_bounds_spray.zero_()
 
     def reset(self, world_indices: wp.array(dtype=int)):
-        self.distance[world_indices].fill_((self.size[2] - 2) * 0.005 * self.decimation * self.decimation)
-        self.prev_distance[world_indices].fill_((self.size[2] - 2) * 0.005 * self.decimation * self.decimation)
+        self.distance[world_indices].zero_()
+        self.prev_distance[world_indices].zero_()
         self.smoothness[world_indices].zero_()
         self.air_gap[world_indices].zero_()
         self.adhesion_failure_amount[world_indices].zero_()
