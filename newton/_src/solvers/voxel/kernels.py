@@ -2,6 +2,7 @@ import warp as wp
 
 from .utils import (
     is_full,
+    is_rebar,
     is_wall,
     min_six_way,
     overflow_part,
@@ -19,6 +20,7 @@ U8_MAX = wp.uint8(255)
 DENSITY_ZERO = wp.uint8(0)
 DENSITY_10_PERCENT = wp.uint8(25)
 DENSITY_HALF = wp.uint8(128)
+DENSITY_REBAR = wp.uint8(254)
 DENSITY_MAX = wp.uint8(255)
 DENSITY_MAX_F32 = wp.float32(255)
 DISTANCE_ZERO = wp.uint8(0)
@@ -391,6 +393,8 @@ def spray_trajectory_kernel(
     velocities: wp.array(dtype=wp.float32),
     linear_spacing: wp.float32,
     h: wp.float32,
+    seed: wp.array(dtype=wp.int32),
+    transparency: wp.array(dtype=wp.float32),
     ray_index: wp.array2d(dtype=wp.int32),
 ):
     widx, i, j = wp.tid()
@@ -404,7 +408,12 @@ def spray_trajectory_kernel(
         w = wet[widx, pos[0], pos[1], pos[2]]
         d = dry[widx, pos[0], pos[1], pos[2]]
         if not total_density_is_smaller(w, d, DENSITY_HALF):
-            wp.atomic_max(ray_index, widx, i, SPRAY_COUNT - j - 10)
+            if is_rebar(w, d):
+                state = wp.rand_init(seed[0], widx * 100000 + i * 1000 + j)
+                if transparency[widx] > wp.randf(state):
+                    wp.atomic_max(ray_index, widx, i, SPRAY_COUNT - j - 10)
+            else:
+                wp.atomic_max(ray_index, widx, i, SPRAY_COUNT - j - 10)
 
 
 @wp.func
@@ -878,6 +887,57 @@ def set_wall_kernel(
     wet[indices[widx], i, dry.shape[2] - 2, j] = DENSITY_MAX
     distance[indices[widx], i, dry.shape[2] - 1, j] = DISTANCE_ZERO
     distance[indices[widx], i, dry.shape[2] - 2, j] = DISTANCE_ZERO
+
+
+@wp.kernel
+def set_rebar_kernel(
+    wet: wp.array4d(dtype=wp.uint8),
+    dry: wp.array4d(dtype=wp.uint8),
+    distance: wp.array4d(dtype=wp.uint8),
+    generate_rebar: wp.array(dtype=wp.bool),
+    rebar_offset_hor: wp.array(dtype=wp.vec3i),
+    rebar_offset_ver: wp.array(dtype=wp.vec3i),
+    rebar_thickness: wp.array(dtype=wp.int32),
+    rebar_spacing: wp.array(dtype=wp.vec2i),
+    indices: wp.array(dtype=wp.int32),
+    rebar_count_x: wp.int32,
+):
+    w, i, j = wp.tid()
+    widx = indices[w]
+    if not generate_rebar[widx]:
+        return
+
+    if (i < rebar_count_x and j > wet.shape[3]) or (i >= rebar_count_x and j > wet.shape[1]):
+        return
+
+    r = rebar_thickness[widx] // 2
+    if (i < rebar_count_x and (rebar_offset_hor[widx][0] + rebar_spacing[widx][0] * i + r) > wet.shape[1]) or (
+        i >= rebar_count_x
+        and (rebar_offset_ver[widx][2] + rebar_spacing[widx][1] * (i - rebar_count_x) + r) > wet.shape[3]
+    ):
+        return
+
+    r_sq = r * r
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            dist = wp.float32(dx * dx + dy * dy)
+            if dist > r_sq:
+                continue
+
+            if i < rebar_count_x:
+                # vertical rebar
+                pos = rebar_offset_hor[widx] + wp.vec3i(
+                    dx + rebar_spacing[widx][0] * i, dy, j - rebar_offset_hor[widx][2]
+                )
+            else:
+                # horizontal rebar
+                pos = rebar_offset_ver[widx] + wp.vec3i(
+                    j - rebar_offset_ver[widx][1], dy, dx + rebar_spacing[widx][1] * (i - rebar_count_x)
+                )
+            if valid_pos(pos, wet.shape):
+                wet[widx, pos[0], pos[1], pos[2]] = DENSITY_REBAR
+                dry[widx, pos[0], pos[1], pos[2]] = DENSITY_REBAR
+                distance[widx, pos[0], pos[1], pos[2]] = DISTANCE_ZERO
 
 
 @wp.kernel

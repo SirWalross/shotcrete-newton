@@ -267,7 +267,7 @@ class SolverBase:
         """
         raise NotImplementedError()
 
-    def reset(self, state_out: State, world_indices: wp.array):
+    def reset(self, state_out: State, world_indices: wp.array, **kwargs):
         """
         Reset the model.
 
