@@ -197,7 +197,7 @@ class SolverVoxel(SolverBase):
             with wp.ScopedTimer("solidify", active=self.active, synchronize=self.synchronize):
                 wp.launch(
                     solidify_kernel,
-                    dim=self.shape,
+                    dim=(self.shape[0], self.shape[1], self.shape[2]),
                     inputs=[self.model.voxel_wet, self.model.voxel_dry, self.tc, self.global_bbox],
                 )
             with wp.ScopedTimer("drip", active=self.active, synchronize=self.synchronize):

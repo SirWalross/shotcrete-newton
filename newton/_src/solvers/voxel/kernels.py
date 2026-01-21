@@ -46,30 +46,31 @@ def solidify_kernel(
     tc: wp.array(dtype=wp.uint8),
     bbox: wp.array2d(dtype=wp.int32),
 ):
-    widx, i, j, k = wp.tid()
-    if (
-        i < bbox[widx, 0] - 2
-        or i > bbox[widx, 3] + 2
-        or j < bbox[widx, 1] - 2
-        or j > bbox[widx, 4] + 2
-        or k < bbox[widx, 2] - 2
-        or k > bbox[widx, 5] + 2
-    ):
+    widx, i, j = wp.tid()
+    if i < bbox[widx, 0] - 2 or i > bbox[widx, 3] + 2 or j < bbox[widx, 1] - 2 or j > bbox[widx, 4] + 2:
         return
 
-    w = wet[widx, i, j, k]
-    d = dry[widx, i, j, k]
+    min_z = wp.max(0, bbox[widx, 2] - 2)
+    max_z = wp.min(wet.shape[3], bbox[widx, 5] + 3)
 
-    if is_wall(w, d):
-        return
+    t = tc[widx]
 
-    # calculate part that solidifes
-    w = saturating_add(w, d) - d
-    diff = wp.min(w, tc[widx])
+    for k in range(min_z, max_z):
+        w = wet[widx, i, j, k]
+        if w == DENSITY_ZERO:
+            continue
 
-    # account for if (w + d) > DENSITY_MAX
-    wet[widx, i, j, k] = saturating_sub(w - diff, overflow_part(w, d))
-    dry[widx, i, j, k] = d + diff
+        d = dry[widx, i, j, k]
+        if is_wall(w, d):
+            continue
+
+        # calculate part that solidifes
+        w = saturating_add(w, d) - d
+        diff = wp.min(w, t)
+
+        # account for if (w + d) > DENSITY_MAX
+        wet[widx, i, j, k] = saturating_sub(w - diff, overflow_part(w, d))
+        dry[widx, i, j, k] = d + diff
 
 
 @wp.kernel
