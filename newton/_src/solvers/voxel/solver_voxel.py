@@ -259,47 +259,52 @@ class SolverVoxel(SolverBase):
         rebar_spacing: wp.array(dtype=wp.vec2i),
         rebar_count: tuple[wp.int32, wp.int32],
     ):
-        self.model.voxel_wet[world_indices].fill_(0)
-        self.model.voxel_dry[world_indices].fill_(0)
-        self.model.voxel_distance[world_indices].fill_(255)
-        self.model.voxel_load[world_indices].fill_(0)
-        wp.launch(
-            set_floor_kernel,
-            dim=(world_indices.shape[0], self.shape[1], self.shape[2]),
-            inputs=[
-                self.model.voxel_wet,
-                self.model.voxel_dry,
-                self.model.voxel_distance,
-                world_indices,
-            ],
-        )
-        wp.launch(
-            set_wall_kernel,
-            dim=(world_indices.shape[0], self.shape[1], self.shape[3]),
-            inputs=[
-                self.model.voxel_wet,
-                self.model.voxel_dry,
-                self.model.voxel_distance,
-                world_indices,
-            ],
-        )
-        wp.launch(
-            set_rebar_kernel,
-            dim=(world_indices.shape[0], rebar_count[0] + rebar_count[1], max(self.shape[1], self.shape[3])),
-            inputs=[
-                self.model.voxel_wet,
-                self.model.voxel_dry,
-                self.model.voxel_distance,
-                self.generate_rebar,
-                rebar_offset_hor,
-                rebar_offset_ver,
-                rebar_thickness,
-                rebar_spacing,
-                world_indices,
-                rebar_count[0],
-            ],
-        )
-        wp.launch(reset_global_bbox_kernel, dim=(world_indices.shape[0],), inputs=[self.global_bbox, world_indices])
+        with wp.ScopedTimer("reset", active=self.active, synchronize=self.synchronize):
+            self.model.voxel_wet[world_indices].fill_(0)
+            self.model.voxel_dry[world_indices].fill_(0)
+            self.model.voxel_distance[world_indices].fill_(255)
+            self.model.voxel_load[world_indices].fill_(0)
+            with wp.ScopedTimer("reset floor", active=self.active, synchronize=self.synchronize):
+                wp.launch(
+                    set_floor_kernel,
+                    dim=(world_indices.shape[0], self.shape[1], self.shape[2]),
+                    inputs=[
+                        self.model.voxel_wet,
+                        self.model.voxel_dry,
+                        self.model.voxel_distance,
+                        world_indices,
+                    ],
+                )
+            with wp.ScopedTimer("reset wall", active=self.active, synchronize=self.synchronize):
+                wp.launch(
+                    set_wall_kernel,
+                    dim=(world_indices.shape[0], self.shape[1], self.shape[3]),
+                    inputs=[
+                        self.model.voxel_wet,
+                        self.model.voxel_dry,
+                        self.model.voxel_distance,
+                        world_indices,
+                    ],
+                )
+            with wp.ScopedTimer("reset rebar", active=self.active, synchronize=self.synchronize):
+                wp.launch(
+                    set_rebar_kernel,
+                    dim=(world_indices.shape[0], rebar_count[0] + rebar_count[1], max(self.shape[1], self.shape[3])),
+                    inputs=[
+                        self.model.voxel_wet,
+                        self.model.voxel_dry,
+                        self.model.voxel_distance,
+                        self.generate_rebar,
+                        rebar_offset_hor,
+                        rebar_offset_ver,
+                        rebar_thickness,
+                        rebar_spacing,
+                        world_indices,
+                        rebar_count[0],
+                    ],
+                )
+            with wp.ScopedTimer("reset global bbox", active=self.active, synchronize=self.synchronize):
+                wp.launch(reset_global_bbox_kernel, dim=(world_indices.shape[0],), inputs=[self.global_bbox, world_indices])
 
     @override
     def update_parameters(self, env_indices: wp.array, **kwargs):
