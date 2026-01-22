@@ -320,7 +320,7 @@ class SolverVoxel(SolverBase):
                 wp.launch(
                     spray_reward_kernel,
                     dim=(self.shape[0], self.shape[1] - 2, self.shape[3] - 2),
-                    inputs=[self.model.voxel_wet, self.model.voxel_dry, self.h, rewards.decimation, self.global_bbox],
+                    inputs=[self.model.voxel_wet, self.model.voxel_dry, self.h, rewards.decimation],
                     outputs=[rewards.distance, rewards.smoothness, rewards.air_gap],
                 )
             with wp.ScopedTimer("out of bounds spray calculation", active=self.active, synchronize=self.synchronize):
