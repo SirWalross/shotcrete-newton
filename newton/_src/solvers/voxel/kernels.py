@@ -895,13 +895,13 @@ def set_rebar_kernel(
     if not generate_rebar[widx]:
         return
 
-    if (i < rebar_count_x and j > wet.shape[3]) or (i >= rebar_count_x and j > wet.shape[1]):
+    if (i < rebar_count_x and j >= wet.shape[3]) or (i >= rebar_count_x and j >= wet.shape[1]):
         return
 
     r = rebar_thickness[widx] // 2
-    if (i < rebar_count_x and (rebar_offset_hor[widx][0] + rebar_spacing[widx][0] * i + r) > wet.shape[1]) or (
+    if (i < rebar_count_x and (rebar_offset_hor[widx][0] + rebar_spacing[widx][0] * i - r) > wet.shape[1]) or (
         i >= rebar_count_x
-        and (rebar_offset_ver[widx][2] + rebar_spacing[widx][1] * (i - rebar_count_x) + r) > wet.shape[3]
+        and (rebar_offset_ver[widx][2] + rebar_spacing[widx][1] * (i - rebar_count_x) - r) > wet.shape[3]
     ):
         return
 
@@ -920,7 +920,7 @@ def set_rebar_kernel(
             else:
                 # horizontal rebar
                 pos = rebar_offset_ver[widx] + wp.vec3i(
-                    j - rebar_offset_ver[widx][1], dy, dx + rebar_spacing[widx][1] * (i - rebar_count_x)
+                    j - rebar_offset_ver[widx][0], dy, dx + rebar_spacing[widx][1] * (i - rebar_count_x)
                 )
             if valid_pos(pos, wet.shape):
                 wet[widx, pos[0], pos[1], pos[2]] = DENSITY_REBAR
