@@ -304,16 +304,18 @@ class SolverVoxel(SolverBase):
                     ],
                 )
             with wp.ScopedTimer("reset global bbox", active=self.active, synchronize=self.synchronize):
-                wp.launch(reset_global_bbox_kernel, dim=(world_indices.shape[0],), inputs=[self.global_bbox, world_indices])
+                wp.launch(
+                    reset_global_bbox_kernel, dim=(world_indices.shape[0],), inputs=[self.global_bbox, world_indices]
+                )
 
     @override
     def update_parameters(self, env_indices: wp.array, **kwargs):
         for key, value in kwargs.items():
             if hasattr(self, key):
-                if isinstance(value, wp.array):
+                if not isinstance(self.__dict__[key], wp.array):
+                    self.__dict__[key] = wp.to_torch(value)[0]
+                elif isinstance(value, wp.array):
                     self.__dict__[key][env_indices].assign(value)
-                elif not isinstance(self.__dict__[key], wp.array):
-                    self.__dict__[key] = value
                 else:
                     self.__dict__[key][env_indices].fill_(value)
             else:
