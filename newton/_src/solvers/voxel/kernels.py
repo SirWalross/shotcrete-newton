@@ -819,28 +819,43 @@ def spray_reward_kernel(
     h: wp.float32,
     decimation: wp.int32,
     height: wp.array3d(dtype=wp.float32),
+    height_without_rebar: wp.array3d(dtype=wp.float32),
     height_sq: wp.array3d(dtype=wp.float32),
     air_gap: wp.array3d(dtype=wp.float32),
 ):
     widx, i, k = wp.tid()
-    hit = wp.bool(False)
+    hit_rebar = wp.bool(False)
+    hit_concrete = wp.bool(False)
 
     local_gap = wp.float32(0.0)
 
     for j in range(wet.shape[2]):
         w = wet[widx, i + 1, j, k + 1]
         d = dry[widx, i + 1, j, k + 1]
-        if not hit and not total_density_is_smaller(w, d, DENSITY_HALF):
-            wp.atomic_add(height, widx, i // decimation, k // decimation, wp.float32(wet.shape[2] - j - 2) * h)
-            wp.atomic_add(
-                height_sq,
-                widx,
-                i // decimation,
-                k // decimation,
-                wp.float32(wet.shape[2] - j - 1) * h * wp.float32(wet.shape[2] - j - 2) * h,
-            )
-            hit = True
-        if hit:
+        if not hit_concrete and not total_density_is_smaller(w, d, DENSITY_HALF):
+            if not hit_rebar:
+                wp.atomic_add(height, widx, i // decimation, k // decimation, wp.float32(wet.shape[2] - j - 2) * h)
+                wp.atomic_add(
+                    height_sq,
+                    widx,
+                    i // decimation,
+                    k // decimation,
+                    wp.float32(wet.shape[2] - j - 1) * h * wp.float32(wet.shape[2] - j - 2) * h,
+                )
+            if is_rebar(w, d):
+                if not hit_rebar:
+                    wp.atomic_add(
+                        height_without_rebar,
+                        widx,
+                        i // decimation,
+                        k // decimation,
+                        wp.float32(wet.shape[2] - j - 2) * h,
+                    )
+                    hit_rebar = True
+            else:
+                hit_rebar = True
+                hit_concrete = True
+        if hit_rebar:
             local_gap += relu(1.0 - wp.float32(w) - wp.float32(d))
     wp.atomic_add(air_gap, widx, i // decimation, k // decimation, local_gap)
 
