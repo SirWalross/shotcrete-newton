@@ -838,8 +838,8 @@ def spray_reward_kernel(
     local_gap = wp.float32(0.0)
 
     for j in range(wet.shape[2]):
-        w = wet[widx, i + 1, j, k + 1]
-        d = dry[widx, i + 1, j, k + 1]
+        w = wet[widx, i + 1, j, k + 2]
+        d = dry[widx, i + 1, j, k + 2]
         if not hit_concrete and not total_density_is_smaller(w, d, DENSITY_HALF):
             if not hit_rebar:
                 wp.atomic_add(height, widx, i // decimation, k // decimation, wp.float32(wet.shape[2] - j - 2) * h)
