@@ -115,6 +115,7 @@ class SolverVoxel(SolverBase):
         update_joints_and_bodies: bool = False,
         alpha: float = 0.1,
         generate_rebar: bool = False,
+        rebound: bool = False,
     ):
         super().__init__(model=model)
 
@@ -128,6 +129,7 @@ class SolverVoxel(SolverBase):
         self.respreading_backtracking_amount = respreading_backtracking_amount
         self.transparency = wp.full((self.shape[0],), alpha, dtype=wp.float32)
         self.generate_rebar = wp.full((self.shape[0],), generate_rebar, dtype=wp.bool)
+        self.rebound = wp.full((self.shape[0],), rebound, dtype=wp.bool)
         self.tc = wp.full((self.shape[0],), tc, dtype=wp.uint8)
         self.total_droplet_mass = wp.full((self.shape[0],), droplet_mass, dtype=wp.float32)
         self.sigma = wp.full((self.shape[0],), sigma, dtype=wp.float32)
@@ -596,13 +598,14 @@ class SolverVoxel(SolverBase):
                     self.droplet_mass,
                     LINEAR_SPACING,
                     self.h,
+                    self.rebound
                 ],
                 outputs=[self.rebound_droplet_mass, self.rebound_directions],
             )
             wp.launch(
                 randomize_directions_kernel,
                 dim=(self.shape[0], self.k),
-                inputs=[self.rebound_directions, self.rebound_opening_angle, self.i],
+                inputs=[self.rebound_directions, self.rebound_opening_angle, self.i, self.rebound],
             )
             self.ray_indices.zero_()
             wp.launch(

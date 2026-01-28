@@ -300,7 +300,7 @@ def drip_kernel(
 ):
     widx, i, j = wp.tid()
 
-    if index[0] % drip_vel[widx] != 0:
+    if index[0] % drip_vel[widx] != 0 or drip_vel[widx] == -1:
         return
 
     ii = i + 1
@@ -512,10 +512,13 @@ def spray_rebound_kernel(
     droplet_mass: wp.array2d(dtype=wp.float32),
     linear_spacing: wp.float32,
     h: wp.float32,
+    rebound: wp.array(dtype=wp.bool),
     rebound_amount: wp.array2d(dtype=wp.float32),
     directions: wp.array2d(dtype=wp.vec3f),
 ):
     widx, i = wp.tid()
+    if not rebound[widx]:
+        return
     if valid_pos(ray_hit_pos[widx, i], wet.shape, 1):
         n = wp.normalize(
             wp.vec3f(
@@ -750,9 +753,14 @@ def spray_distribution_kernel(
 
 @wp.kernel
 def randomize_directions_kernel(
-    ray_dir: wp.array2d(dtype=wp.vec3), opening_angle: wp.array(dtype=wp.float32), seed: wp.array(dtype=wp.int32)
+    ray_dir: wp.array2d(dtype=wp.vec3),
+    opening_angle: wp.array(dtype=wp.float32),
+    seed: wp.array(dtype=wp.int32),
+    rebound: wp.array(dtype=wp.bool),
 ):
     widx, i = wp.tid()
+    if not rebound[widx]:
+        return
     state = wp.rand_init(seed[0], i)
     z = wp.cos(opening_angle[widx]) + wp.randf(state) * (1.0 - wp.cos(opening_angle[widx]))
     phi = wp.randf(state) * wp.pi * 2.0
