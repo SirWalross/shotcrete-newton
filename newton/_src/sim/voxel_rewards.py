@@ -17,6 +17,7 @@ class VoxelRewards:
             self.prev_distance = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
             self.smoothness = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
             self.air_gap = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
+            self.prev_air_gap = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
             self.adhesion_failure_amount = wp.zeros((size[0],), dtype=wp.float32)
             self.out_of_bounds_spray = wp.zeros((size[0],), dtype=wp.float32)
 
@@ -25,6 +26,7 @@ class VoxelRewards:
         self.distance.zero_()
         self.distance_without_rebar.zero_()
         self.smoothness.zero_()
+        self.prev_air_gap = wp.clone(self.air_gap)
         self.air_gap.zero_()
         self.adhesion_failure_amount.zero_()
         self.out_of_bounds_spray.zero_()
@@ -35,6 +37,7 @@ class VoxelRewards:
         self.prev_distance[world_indices].zero_()
         self.smoothness[world_indices].zero_()
         self.air_gap[world_indices].zero_()
+        self.prev_air_gap[world_indices].zero_()
         self.adhesion_failure_amount[world_indices].zero_()
         self.out_of_bounds_spray[world_indices].zero_()
 
