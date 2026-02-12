@@ -828,6 +828,7 @@ def spray_reward_kernel(
     decimation: wp.int32,
     height: wp.array3d(dtype=wp.float32),
     height_without_rebar: wp.array3d(dtype=wp.float32),
+    height_without_air_gap: wp.array3d(dtype=wp.float32),
     height_sq: wp.array3d(dtype=wp.float32),
     air_gap: wp.array3d(dtype=wp.float32),
 ):
@@ -835,6 +836,7 @@ def spray_reward_kernel(
     hit_rebar = wp.bool(False)
     hit_concrete = wp.bool(False)
 
+    local_height = wp.float32(0.0)
     local_gap = wp.float32(0.0)
 
     for j in range(wet.shape[2]):
@@ -842,13 +844,14 @@ def spray_reward_kernel(
         d = dry[widx, i + 1, j, k + 2]
         if not hit_concrete and not total_density_is_smaller(w, d, DENSITY_HALF):
             if not hit_rebar:
-                wp.atomic_add(height, widx, i // decimation, k // decimation, wp.float32(wet.shape[2] - j - 2) * h)
+                local_height = wp.float32(wet.shape[2] - j - 2) * h
+                wp.atomic_add(height, widx, i // decimation, k // decimation, local_height)
                 wp.atomic_add(
                     height_sq,
                     widx,
                     i // decimation,
                     k // decimation,
-                    wp.float32(wet.shape[2] - j - 1) * h * wp.float32(wet.shape[2] - j - 2) * h,
+                    local_height * local_height,
                 )
             if is_rebar(w, d):
                 if not hit_rebar:
@@ -864,8 +867,12 @@ def spray_reward_kernel(
                 hit_rebar = True
                 hit_concrete = True
         if hit_rebar:
-            local_gap += relu(1.0 - wp.float32(w) - wp.float32(d))
+            gap = relu(1.0 - wp.float32(w) - wp.float32(d))
+            local_gap += gap
+            if total_density_is_smaller(w, d, DENSITY_HALF):
+                local_height -= h
     wp.atomic_add(air_gap, widx, i // decimation, k // decimation, local_gap)
+    wp.atomic_add(height_without_air_gap, widx, i // decimation, k // decimation, local_height)
 
 
 @wp.kernel

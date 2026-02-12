@@ -14,7 +14,12 @@ class VoxelRewards:
             self.distance_without_rebar = wp.zeros(
                 (size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32
             )
-            self.prev_distance = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
+            self.distance_without_air_gap = wp.zeros(
+                (size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32
+            )
+            self.prev_distance_without_air_gap = wp.zeros(
+                (size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32
+            )
             self.smoothness = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
             self.air_gap = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
             self.prev_air_gap = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
@@ -22,11 +27,13 @@ class VoxelRewards:
             self.out_of_bounds_spray = wp.zeros((size[0],), dtype=wp.float32)
 
     def step(self):
-        self.prev_distance = wp.clone(self.distance)
+        self.prev_distance_without_air_gap = wp.clone(self.distance_without_air_gap)
+        self.prev_air_gap = wp.clone(self.air_gap)
+
         self.distance.zero_()
         self.distance_without_rebar.zero_()
+        self.distance_without_air_gap.zero_()
         self.smoothness.zero_()
-        self.prev_air_gap = wp.clone(self.air_gap)
         self.air_gap.zero_()
         self.adhesion_failure_amount.zero_()
         self.out_of_bounds_spray.zero_()
@@ -34,7 +41,8 @@ class VoxelRewards:
     def reset(self, world_indices: wp.array(dtype=int)):
         self.distance[world_indices].zero_()
         self.distance_without_rebar[world_indices].zero_()
-        self.prev_distance[world_indices].zero_()
+        self.distance_without_air_gap[world_indices].zero_()
+        self.prev_distance_without_air_gap[world_indices].zero_()
         self.smoothness[world_indices].zero_()
         self.air_gap[world_indices].zero_()
         self.prev_air_gap[world_indices].zero_()
