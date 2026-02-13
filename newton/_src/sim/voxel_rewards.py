@@ -11,6 +11,7 @@ class VoxelRewards:
         with wp.ScopedDevice(device):
             # rigid contacts
             self.distance = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
+            self.prev_distance = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
             self.distance_without_rebar = wp.zeros(
                 (size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32
             )
@@ -27,6 +28,7 @@ class VoxelRewards:
             self.out_of_bounds_spray = wp.zeros((size[0],), dtype=wp.float32)
 
     def step(self):
+        self.prev_distance = wp.clone(self.distance)
         self.prev_distance_without_air_gap = wp.clone(self.distance_without_air_gap)
         self.prev_air_gap = wp.clone(self.air_gap)
 
@@ -40,6 +42,7 @@ class VoxelRewards:
 
     def reset(self, world_indices: wp.array(dtype=int)):
         self.distance[world_indices].zero_()
+        self.prev_distance[world_indices].zero_()
         self.distance_without_rebar[world_indices].zero_()
         self.distance_without_air_gap[world_indices].zero_()
         self.prev_distance_without_air_gap[world_indices].zero_()
