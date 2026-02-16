@@ -789,24 +789,32 @@ def update_directions_kernel(
     nozzle_angle: wp.array(dtype=wp.float32),
     ee_transforms: wp.array(dtype=wp.transform),
     voxel_pos: wp.array(dtype=wp.vec3f),
-    droplet_mass: wp.array(dtype=wp.float32),
-    seed: wp.array(dtype=wp.int32),
+    total_droplet_mass: wp.array(dtype=wp.float32),
+    t: wp.array(dtype=wp.int32),
     k: wp.int32,
     h: wp.float32,
     width: wp.int32,
+    concrete_flow_params: wp.array(dtype=wp.vec4f),
     positions: wp.array2d(dtype=wp.vec3i),
     directions: wp.array2d(dtype=wp.vec3f),
     mass: wp.array2d(dtype=wp.float32),
 ):
     widx, i = wp.tid()
     z = 1.0 - (1.0 - wp.cos(nozzle_angle[widx])) * (wp.float32(i) + 0.5) / wp.float32(k)
-    state = wp.rand_init(seed[0])
+    state = wp.rand_init(t[0])
     phi = wp.float32(i) * wp.pi * (3.0 - wp.sqrt(5.0)) + wp.randf(state, 0.0, wp.pi * 2.0)
     positions[widx, i] = wp.vec3i((wp.transform_get_translation(ee_transforms[widx]) - voxel_pos[widx]) / h) + wp.vec3i(
         width // 2, 0, 0
     )
     directions[widx, i] = vector_in_cone(z, phi, wp.transform_vector(ee_transforms[widx], wp.vec3f(1.0, 0.0, 0.0)))
-    mass[widx, i] = mass_ratio(wp.acos(z) / nozzle_angle[widx]) * droplet_mass[widx]
+    mass[widx, i] = concrete_flow(
+        mass_ratio(wp.acos(z) / nozzle_angle[widx]) * total_droplet_mass[widx], concrete_flow_params[widx], t[0]
+    )
+
+
+@wp.func
+def concrete_flow(mass: wp.float32, params: wp.vec4f, t: wp.int32) -> float:
+    return mass * wp.where(wp.mod(wp.float32(t), params[0]) > params[1], params[3], params[2])
 
 
 @wp.func

@@ -149,6 +149,9 @@ class SolverVoxel(SolverBase):
         self.droplet_mass = wp.zeros((self.shape[0], self.k), dtype=wp.float32)
         self.ray_trajectory = wp.zeros((self.shape[0], self.k, self.backtrack_count), dtype=wp.vec3i)
         self.ray_rebound_trajectory = wp.zeros((self.shape[0], self.k, 1), dtype=wp.vec3i)
+        self.concrete_flow_params = wp.array(
+            np.tile(np.array([[6 / 0.05, 4 / 0.05, 1, 0]]), (self.shape[0], 1)), dtype=wp.vec4f
+        )
 
         # speed distributions
         self.speed_distribution = wp.array(
@@ -534,6 +537,7 @@ class SolverVoxel(SolverBase):
                     self.k,
                     self.h,
                     self.shape[1],
+                    self.concrete_flow_params,
                 ],
                 outputs=[self.positions, self.directions, self.droplet_mass],
             )
