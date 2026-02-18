@@ -794,7 +794,7 @@ def update_directions_kernel(
     k: wp.int32,
     h: wp.float32,
     width: wp.int32,
-    concrete_flow_params: wp.array(dtype=wp.vec4f),
+    concrete_flow_params: wp.array(dtype=wp.vec3f),
     positions: wp.array2d(dtype=wp.vec3i),
     directions: wp.array2d(dtype=wp.vec3f),
     mass: wp.array2d(dtype=wp.float32),
@@ -813,8 +813,10 @@ def update_directions_kernel(
 
 
 @wp.func
-def concrete_flow(mass: wp.float32, params: wp.vec4f, t: wp.int32) -> float:
-    return mass * wp.where(wp.mod(wp.float32(t), params[0]) > params[1], params[3], params[2])
+def concrete_flow(mass: wp.float32, params: wp.vec3f, t: wp.int32) -> float:
+    ratio = wp.min(params[1] / params[0], 1.0)
+    scaling_factor = 1.0 / (1.0 * ratio + params[2] * (1.0 - ratio))
+    return mass * scaling_factor * wp.where(wp.mod(wp.float32(t), params[0]) > params[1], 1.0, params[2])
 
 
 @wp.func
