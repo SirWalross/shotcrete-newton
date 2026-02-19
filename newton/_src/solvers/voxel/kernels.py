@@ -913,35 +913,37 @@ def spray_reward_kernel(
 
 
 @wp.kernel
-def set_floor_kernel(
+def set_box_kernel(
     wet: wp.array4d(dtype=wp.uint8),
     dry: wp.array4d(dtype=wp.uint8),
     distance: wp.array4d(dtype=wp.uint8),
+    generate_box: wp.array(dtype=wp.bool),
+    box_position: wp.array(dtype=wp.vec2i),
+    box_size: wp.array(dtype=wp.vec2i),
+    wall_thickness: int,
     indices: wp.array(dtype=wp.int32),
 ):
-    widx, i, j = wp.tid()
-    dry[indices[widx], i, j, 0] = DENSITY_MAX
-    wet[indices[widx], i, j, 0] = DENSITY_MAX
-    dry[indices[widx], i, j, 1] = DENSITY_MAX
-    wet[indices[widx], i, j, 1] = DENSITY_MAX
-    distance[indices[widx], i, j, 0] = DISTANCE_ZERO
-    distance[indices[widx], i, j, 1] = DISTANCE_ZERO
+    w = wp.tid()
+    widx = indices[w]
+    if not generate_box[widx]:
+        return
 
+    # calculate box corners
+    ur = wp.vec2i(
+        wp.clamp(box_position[widx][0] + box_size[widx][0] // 2, 0, wet.shape[1]),
+        wp.clamp(box_position[widx][1] + box_size[widx][1] // 2, 0, wet.shape[3] - 4),
+    )
+    dl = wp.vec2i(
+        wp.clamp(box_position[widx][0] - box_size[widx][0] // 2, 0, wet.shape[1]),
+        wp.clamp(box_position[widx][1] - box_size[widx][1] // 2, 0, wet.shape[3] - 4),
+    )
 
-@wp.kernel
-def set_wall_kernel(
-    wet: wp.array4d(dtype=wp.uint8),
-    dry: wp.array4d(dtype=wp.uint8),
-    distance: wp.array4d(dtype=wp.uint8),
-    indices: wp.array(dtype=wp.int32),
-):
-    widx, i, j = wp.tid()
-    dry[indices[widx], i, dry.shape[2] - 1, j] = DENSITY_MAX
-    wet[indices[widx], i, dry.shape[2] - 1, j] = DENSITY_MAX
-    dry[indices[widx], i, dry.shape[2] - 2, j] = DENSITY_MAX
-    wet[indices[widx], i, dry.shape[2] - 2, j] = DENSITY_MAX
-    distance[indices[widx], i, dry.shape[2] - 1, j] = DISTANCE_ZERO
-    distance[indices[widx], i, dry.shape[2] - 2, j] = DISTANCE_ZERO
+    for x in range(dl[0], ur[0]):
+        for z in range(dl[1], ur[1]):
+            for y in range(wet.shape[2] - wall_thickness - 2, wet.shape[2] - 2):
+                wet[widx, x, y, z + 2] = DENSITY_ZERO
+                dry[widx, x, y, z + 2] = DENSITY_ZERO
+                distance[widx, x, y, z + 2] = DISTANCE_MAX
 
 
 @wp.kernel

@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any
+
 import numpy as np
 import warp as wp
 
@@ -26,6 +28,11 @@ from ...core.types import override
 from ...sim import Contacts, Control, Model, State, VoxelRewards
 from ..solver import SolverBase
 from .kernels import (
+    DENSITY_MAX,
+    DENSITY_ZERO,
+    DISTANCE_MAX,
+    DISTANCE_ZERO,
+    LOAD_ZERO,
     SPRAY_COUNT,
     capacity_propagation_kernel,
     drip_kernel,
@@ -38,9 +45,8 @@ from .kernels import (
     reset_bbox_kernel,
     reset_global_bbox_kernel,
     respreading_kernel,
-    set_floor_kernel,
+    set_box_kernel,
     set_rebar_kernel,
-    set_wall_kernel,
     solidify_kernel,
     spray_backtrack_kernel,
     spray_distribution_kernel,
@@ -115,6 +121,7 @@ class SolverVoxel(SolverBase):
         update_joints_and_bodies: bool = False,
         alpha: float = 0.1,
         generate_rebar: bool = False,
+        generate_box: bool = False,
         rebound: bool = False,
         obstruction_distance: float = 0.1,
     ):
@@ -130,6 +137,7 @@ class SolverVoxel(SolverBase):
         self.respreading_backtracking_amount = respreading_backtracking_amount
         self.transparency = wp.full((self.shape[0],), alpha, dtype=wp.float32)
         self.generate_rebar = wp.full((self.shape[0],), generate_rebar, dtype=wp.bool)
+        self.generate_box = wp.full((self.shape[0],), generate_box, dtype=wp.bool)
         self.rebound = wp.full((self.shape[0],), rebound, dtype=wp.bool)
         self.tc = wp.full((self.shape[0],), tc, dtype=wp.uint8)
         self.total_droplet_mass = wp.full((self.shape[0],), droplet_mass, dtype=wp.float32)
@@ -258,56 +266,71 @@ class SolverVoxel(SolverBase):
         self,
         state_out: State,
         world_indices: wp.array(dtype=int),
-        rebar_offset_hor: wp.array(dtype=wp.vec3i),
-        rebar_offset_ver: wp.array(dtype=wp.vec3i),
-        rebar_thickness: wp.array(dtype=wp.int32),
-        rebar_spacing: wp.array(dtype=wp.vec2i),
-        rebar_count: tuple[wp.int32, wp.int32],
+        rebar_settings: dict[str, Any] | None = None,
+        box_settings: dict[str, Any] | None = None,
     ):
         with wp.ScopedTimer("reset", active=self.active, synchronize=self.synchronize):
-            self.model.voxel_wet[world_indices].fill_(0)
-            self.model.voxel_dry[world_indices].fill_(0)
-            self.model.voxel_distance[world_indices].fill_(255)
-            self.model.voxel_load[world_indices].fill_(0)
-            with wp.ScopedTimer("reset floor", active=self.active, synchronize=self.synchronize):
-                wp.launch(
-                    set_floor_kernel,
-                    dim=(world_indices.shape[0], self.shape[1], self.shape[2]),
-                    inputs=[
-                        self.model.voxel_wet,
-                        self.model.voxel_dry,
-                        self.model.voxel_distance,
-                        world_indices,
-                    ],
+            self.model.voxel_wet[world_indices].fill_(DENSITY_ZERO)
+            self.model.voxel_dry[world_indices].fill_(DENSITY_ZERO)
+            self.model.voxel_distance[world_indices].fill_(DISTANCE_MAX)
+            self.model.voxel_load[world_indices].fill_(LOAD_ZERO)
+
+            # set floor
+            self.model.voxel_wet[world_indices, :, :, :1].fill_(DENSITY_MAX)
+            self.model.voxel_dry[world_indices, :, :, :1].fill_(DENSITY_MAX)
+            self.model.voxel_distance[world_indices, :, :, :1].fill_(DISTANCE_ZERO)
+
+            # set wall
+            self.model.voxel_wet[world_indices, :, self.shape[2] - 2 :, :].fill_(DENSITY_MAX)
+            self.model.voxel_dry[world_indices, :, self.shape[2] - 2 :, :].fill_(DENSITY_MAX)
+            self.model.voxel_distance[world_indices, :, self.shape[2] - 2 :, :].fill_(DISTANCE_ZERO)
+
+            if box_settings is not None:
+                indices = wp.array(
+                    wp.to_torch(world_indices)[wp.to_torch(self.generate_box)[wp.to_torch(world_indices)]]
                 )
-            with wp.ScopedTimer("reset wall", active=self.active, synchronize=self.synchronize):
-                wp.launch(
-                    set_wall_kernel,
-                    dim=(world_indices.shape[0], self.shape[1], self.shape[3]),
-                    inputs=[
-                        self.model.voxel_wet,
-                        self.model.voxel_dry,
-                        self.model.voxel_distance,
-                        world_indices,
-                    ],
+                self.model.voxel_wet[indices, :, self.shape[2] - box_settings["wall_thickness"] - 2:, :].fill_(DENSITY_MAX)
+                self.model.voxel_dry[indices, :, self.shape[2] - box_settings["wall_thickness"] - 2:, :].fill_(DENSITY_MAX)
+                self.model.voxel_distance[indices, :, self.shape[2] - box_settings["wall_thickness"] - 2:, :].fill_(
+                    DISTANCE_ZERO
                 )
-            with wp.ScopedTimer("reset rebar", active=self.active, synchronize=self.synchronize):
-                wp.launch(
-                    set_rebar_kernel,
-                    dim=(world_indices.shape[0], rebar_count[0] + rebar_count[1], max(self.shape[1], self.shape[3])),
-                    inputs=[
-                        self.model.voxel_wet,
-                        self.model.voxel_dry,
-                        self.model.voxel_distance,
-                        self.generate_rebar,
-                        rebar_offset_hor,
-                        rebar_offset_ver,
-                        rebar_thickness,
-                        rebar_spacing,
-                        world_indices,
-                        rebar_count[0],
-                    ],
-                )
+                with wp.ScopedTimer("reset box", active=self.active, synchronize=self.synchronize):
+                    wp.launch(
+                        set_box_kernel,
+                        dim=(world_indices.shape[0],),
+                        inputs=[
+                            self.model.voxel_wet,
+                            self.model.voxel_dry,
+                            self.model.voxel_distance,
+                            self.generate_box,
+                            box_settings["box_position"],
+                            box_settings["box_size"],
+                            box_settings["wall_thickness"],
+                            world_indices,
+                        ],
+                    )
+            if rebar_settings is not None:
+                with wp.ScopedTimer("reset rebar", active=self.active, synchronize=self.synchronize):
+                    wp.launch(
+                        set_rebar_kernel,
+                        dim=(
+                            world_indices.shape[0],
+                            rebar_settings["rebar_count"][0] + rebar_settings["rebar_count"][1],
+                            max(self.shape[1], self.shape[3]),
+                        ),
+                        inputs=[
+                            self.model.voxel_wet,
+                            self.model.voxel_dry,
+                            self.model.voxel_distance,
+                            self.generate_rebar,
+                            rebar_settings["rebar_offset_hor"],
+                            rebar_settings["rebar_offset_ver"],
+                            rebar_settings["rebar_thickness"],
+                            rebar_settings["rebar_spacing"],
+                            world_indices,
+                            rebar_settings["rebar_count"][0],
+                        ],
+                    )
             with wp.ScopedTimer("reset global bbox", active=self.active, synchronize=self.synchronize):
                 wp.launch(
                     reset_global_bbox_kernel, dim=(world_indices.shape[0],), inputs=[self.global_bbox, world_indices]
