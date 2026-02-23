@@ -346,6 +346,22 @@ class SolverVoxel(SolverBase):
             else:
                 raise AttributeError(f"SolverVoxel has no attribute '{key}'")
 
+    def env_randomization(
+        self,
+        env_indices,
+        box_size,
+        box_position,
+        count,
+    ):
+        for i, widx in enumerate(env_indices):
+            for c in range(count[i].item()):
+                self.model.voxel_dry[
+                    widx,
+                    box_position[i, c, 0] - box_size[i, c, 0] // 2 : box_position[i, c, 0] + box_size[i, c, 0] // 2,
+                    -box_size[i, c, 1] - 2 : -2,
+                    box_position[i, c, 1] - box_size[i, c, 2] // 2 : box_position[i, c, 1] + box_size[i, c, 2] // 2,
+                ].fill_(DENSITY_MAX)
+
     def update_rewards(self, rewards: VoxelRewards):
         with wp.ScopedTimer("rewards", active=self.active, synchronize=self.synchronize):
             with wp.ScopedTimer("spray reward calculation", active=self.active, synchronize=self.synchronize):
