@@ -286,18 +286,17 @@ class SolverVoxel(SolverBase):
             self.model.voxel_distance[world_indices, :, self.shape[2] - 2 :, :].fill_(DISTANCE_ZERO)
 
             if box_settings is not None:
-                indices = wp.array(
-                    wp.to_torch(world_indices)[wp.to_torch(self.generate_box)[wp.to_torch(world_indices)]]
-                )
-                self.model.voxel_wet[indices, :, self.shape[2] - box_settings["wall_thickness"] - 2 :, :].fill_(
-                    DENSITY_MAX
-                )
-                self.model.voxel_dry[indices, :, self.shape[2] - box_settings["wall_thickness"] - 2 :, :].fill_(
-                    DENSITY_MAX
-                )
-                self.model.voxel_distance[indices, :, self.shape[2] - box_settings["wall_thickness"] - 2 :, :].fill_(
-                    DISTANCE_ZERO
-                )
+                for i, widx in enumerate(wp.to_torch(world_indices)):
+                    if wp.to_torch(self.generate_box)[widx]:
+                        self.model.voxel_wet[
+                            widx.item(), :, self.shape[2] - box_settings["wall_thickness"][i].item() - 2 :, :
+                        ].fill_(DENSITY_MAX)
+                        self.model.voxel_dry[
+                            widx.item(), :, self.shape[2] - box_settings["wall_thickness"][i].item() - 2 :, :
+                        ].fill_(DENSITY_MAX)
+                        self.model.voxel_distance[
+                            widx.item(), :, self.shape[2] - box_settings["wall_thickness"][i].item() - 2 :, :
+                        ].fill_(DISTANCE_ZERO)
                 with wp.ScopedTimer("reset box", active=self.active, synchronize=self.synchronize):
                     wp.launch(
                         set_box_kernel,
@@ -309,7 +308,7 @@ class SolverVoxel(SolverBase):
                             self.generate_box,
                             box_settings["box_position"],
                             box_settings["box_size"],
-                            box_settings["wall_thickness"],
+                            wp.array(box_settings["wall_thickness"], dtype=wp.int32),
                             world_indices,
                         ],
                     )

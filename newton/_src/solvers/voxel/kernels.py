@@ -923,7 +923,7 @@ def set_box_kernel(
     generate_box: wp.array(dtype=wp.bool),
     box_position: wp.array(dtype=wp.vec2i),
     box_size: wp.array(dtype=wp.vec2i),
-    wall_thickness: int,
+    wall_thickness: wp.array(dtype=wp.int32),
     indices: wp.array(dtype=wp.int32),
 ):
     w = wp.tid()
@@ -943,7 +943,7 @@ def set_box_kernel(
 
     for x in range(dl[0], ur[0]):
         for z in range(dl[1], ur[1]):
-            for y in range(wet.shape[2] - wall_thickness - 2, wet.shape[2] - 2):
+            for y in range(wet.shape[2] - wall_thickness[widx] - 2, wet.shape[2] - 2):
                 wet[widx, x, y, z + 2] = DENSITY_ZERO
                 dry[widx, x, y, z + 2] = DENSITY_ZERO
                 distance[widx, x, y, z + 2] = DISTANCE_MAX
