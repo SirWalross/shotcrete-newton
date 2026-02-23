@@ -362,6 +362,38 @@ class SolverVoxel(SolverBase):
                     box_position[i, c, 1] - box_size[i, c, 2] // 2 : box_position[i, c, 1] + box_size[i, c, 2] // 2,
                 ].fill_(DENSITY_MAX)
 
+    def random_removal(
+        self,
+        env_indices,
+        box_size,
+        box_position,
+    ):
+        for i, widx in enumerate(env_indices):
+            self.model.voxel_wet[
+                widx,
+                box_position[i, 0] - box_size[i, 0] // 2 : box_position[i, 0] + box_size[i, 0] // 2,
+                : box_size[i, 1],
+                box_position[i, 1] - box_size[i, 2] // 2 : box_position[i, 1] + box_size[i, 2] // 2,
+            ].fill_(DENSITY_ZERO)
+            self.model.voxel_dry[
+                widx,
+                box_position[i, 0] - box_size[i, 0] // 2 : box_position[i, 0] + box_size[i, 0] // 2,
+                : box_size[i, 1],
+                box_position[i, 1] - box_size[i, 2] // 2 : box_position[i, 1] + box_size[i, 2] // 2,
+            ].fill_(DENSITY_ZERO)
+            self.model.voxel_load[
+                widx,
+                box_position[i, 0] - box_size[i, 0] // 2 : box_position[i, 0] + box_size[i, 0] // 2,
+                : box_size[i, 1],
+                box_position[i, 1] - box_size[i, 2] // 2 : box_position[i, 1] + box_size[i, 2] // 2,
+            ].fill_(LOAD_ZERO)
+            self.model.voxel_distance[
+                widx,
+                box_position[i, 0] - box_size[i, 0] // 2 : box_position[i, 0] + box_size[i, 0] // 2,
+                : box_size[i, 1],
+                box_position[i, 1] - box_size[i, 2] // 2 : box_position[i, 1] + box_size[i, 2] // 2,
+            ].fill_(DISTANCE_MAX)
+
     def update_rewards(self, rewards: VoxelRewards):
         with wp.ScopedTimer("rewards", active=self.active, synchronize=self.synchronize):
             with wp.ScopedTimer("spray reward calculation", active=self.active, synchronize=self.synchronize):
