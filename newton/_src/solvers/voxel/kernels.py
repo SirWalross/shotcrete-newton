@@ -117,7 +117,7 @@ def initialize_load_kernel(
         LOAD_MAX,
         wp.where(
             total_density_is_smaller(w, d, DENSITY_HALF),
-            wp.int16(DENSITY_ZERO),
+            LOAD_ZERO,
             -(wp.int16(w) + wp.int16(d)) / wp.int16(10),
         ),
     )
@@ -173,11 +173,10 @@ def drop_down_kernel(
     widx, i, j = wp.tid()
     write_pos = wp.int32(1)
     z_dim = wet.shape[3]
+    min_write_pos = wp.int32(-1)
     if not in_bbox_all_height(bbox[widx], wp.vec3i(i, j, 0)):
         return
     for k in range(z_dim):
-        if not in_bbox(bbox[widx], wp.vec3i(i, j, k)):
-            continue
         if current_load[widx, i, j, k] < LOAD_ZERO:
             w = wet[widx, i, j, k]
             d = dry[widx, i, j, k]
@@ -193,9 +192,13 @@ def drop_down_kernel(
             # Distance propagation
             distance[widx, i, j, write_pos] = saturating_add(distance[widx, i, j, write_pos - 1], wp.uint8(1))
 
+            min_write_pos = wp.where(min_write_pos == -1, write_pos - 1, min_write_pos)
             write_pos += 1
         elif not total_density_is_smaller(wet[widx, i, j, k], dry[widx, i, j, k], DENSITY_HALF):
             write_pos = k + 1
+    if min_write_pos > -1:
+        wp.atomic_min(bbox, widx, 2, min_write_pos)
+        wp.atomic_min(bbox, widx, 8, min_write_pos)
 
 
 @wp.func
