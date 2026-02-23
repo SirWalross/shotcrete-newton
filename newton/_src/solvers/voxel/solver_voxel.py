@@ -289,9 +289,13 @@ class SolverVoxel(SolverBase):
                 indices = wp.array(
                     wp.to_torch(world_indices)[wp.to_torch(self.generate_box)[wp.to_torch(world_indices)]]
                 )
-                self.model.voxel_wet[indices, :, self.shape[2] - box_settings["wall_thickness"] - 2:, :].fill_(DENSITY_MAX)
-                self.model.voxel_dry[indices, :, self.shape[2] - box_settings["wall_thickness"] - 2:, :].fill_(DENSITY_MAX)
-                self.model.voxel_distance[indices, :, self.shape[2] - box_settings["wall_thickness"] - 2:, :].fill_(
+                self.model.voxel_wet[indices, :, self.shape[2] - box_settings["wall_thickness"] - 2 :, :].fill_(
+                    DENSITY_MAX
+                )
+                self.model.voxel_dry[indices, :, self.shape[2] - box_settings["wall_thickness"] - 2 :, :].fill_(
+                    DENSITY_MAX
+                )
+                self.model.voxel_distance[indices, :, self.shape[2] - box_settings["wall_thickness"] - 2 :, :].fill_(
                     DISTANCE_ZERO
                 )
                 with wp.ScopedTimer("reset box", active=self.active, synchronize=self.synchronize):
@@ -348,6 +352,22 @@ class SolverVoxel(SolverBase):
                     self.__dict__[key][env_indices].fill_(value)
             else:
                 raise AttributeError(f"SolverVoxel has no attribute '{key}'")
+
+    def env_randomization(
+        self,
+        env_indices,
+        box_size,
+        box_position,
+        count,
+    ):
+        for i, widx in enumerate(env_indices):
+            for c in range(count[i].item()):
+                self.model.voxel_dry[
+                    widx,
+                    box_position[i, c, 0] - box_size[i, c, 0] // 2 : box_position[i, c, 0] + box_size[i, c, 0] // 2,
+                    -box_size[i, c, 1] - 2 : -2,
+                    box_position[i, c, 1] - box_size[i, c, 2] // 2 : box_position[i, c, 1] + box_size[i, c, 2] // 2,
+                ].fill_(DENSITY_MAX)
 
     def update_rewards(self, rewards: VoxelRewards):
         with wp.ScopedTimer("rewards", active=self.active, synchronize=self.synchronize):
