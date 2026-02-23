@@ -460,7 +460,7 @@ def respreading_kernel(
             wp.int32(wp.rint(ray_dir[widx, i][1] * velocities[i] * t / h)),
             wp.int32(wp.rint((ray_dir[widx, i][2] * velocities[i] * t - 1.0 / 2.0 * 9.81 * t * t) / h)),
         )
-        if valid_pos(pos, wet.shape):
+        if valid_pos(pos, wet.shape, 1):
             w1 = wet[widx, pos[0], pos[1], pos[2]]
             d1 = dry[widx, pos[0], pos[1], pos[2]]
             if not is_wall(w1, d1):
@@ -933,17 +933,17 @@ def set_box_kernel(
 
     # calculate box corners
     ur = wp.vec2i(
-        wp.clamp(box_position[widx][0] + box_size[widx][0] // 2, 0, wet.shape[1]),
-        wp.clamp(box_position[widx][1] + box_size[widx][1] // 2, 0, wet.shape[3] - 4),
+        wp.clamp(box_position[w][0] + box_size[w][0] // 2, 0, wet.shape[1]),
+        wp.clamp(box_position[w][1] + box_size[w][1] // 2, 0, wet.shape[3] - 4),
     )
     dl = wp.vec2i(
-        wp.clamp(box_position[widx][0] - box_size[widx][0] // 2, 0, wet.shape[1]),
-        wp.clamp(box_position[widx][1] - box_size[widx][1] // 2, 0, wet.shape[3] - 4),
+        wp.clamp(box_position[w][0] - box_size[w][0] // 2, 0, wet.shape[1]),
+        wp.clamp(box_position[w][1] - box_size[w][1] // 2, 0, wet.shape[3] - 4),
     )
 
     for x in range(dl[0], ur[0]):
         for z in range(dl[1], ur[1]):
-            for y in range(wet.shape[2] - wall_thickness[widx] - 2, wet.shape[2] - 2):
+            for y in range(wet.shape[2] - wall_thickness[w] - 2, wet.shape[2] - 2):
                 wet[widx, x, y, z + 2] = DENSITY_ZERO
                 dry[widx, x, y, z + 2] = DENSITY_ZERO
                 distance[widx, x, y, z + 2] = DISTANCE_MAX
