@@ -305,24 +305,27 @@ class SolverVoxel(SolverBase):
                                 box_position[i, 0].item() - box_size[i, 0].item() // 2 : box_position[i, 0].item()
                                 + box_size[i, 0].item() // 2,
                                 -box_size[i, 1].item() - 2 : -2,
-                                box_position[i, 1].item() - box_size[i, 2].item() // 2 : box_position[i, 1].item()
-                                + box_size[i, 2].item() // 2,
+                                box_position[i, 1].item() - box_size[i, 2].item() // 2 + 2 : box_position[i, 1].item()
+                                + box_size[i, 2].item() // 2
+                                + 2,
                             ].fill_(DENSITY_ZERO)
                             self.model.voxel_dry[
                                 widx.item(),
                                 box_position[i, 0].item() - box_size[i, 0].item() // 2 : box_position[i, 0].item()
                                 + box_size[i, 0].item() // 2,
                                 -box_size[i, 1].item() - 2 : -2,
-                                box_position[i, 1].item() - box_size[i, 2].item() // 2 : box_position[i, 1].item()
-                                + box_size[i, 2].item() // 2,
+                                box_position[i, 1].item() - box_size[i, 2].item() // 2 + 2 : box_position[i, 1].item()
+                                + box_size[i, 2].item() // 2
+                                + 2,
                             ].fill_(DENSITY_ZERO)
                             self.model.voxel_distance[
                                 widx.item(),
                                 box_position[i, 0].item() - box_size[i, 0].item() // 2 : box_position[i, 0].item()
                                 + box_size[i, 0].item() // 2,
                                 -box_size[i, 1].item() - 2 : -2,
-                                box_position[i, 1].item() - box_size[i, 2].item() // 2 : box_position[i, 1].item()
-                                + box_size[i, 2].item() // 2,
+                                box_position[i, 1].item() - box_size[i, 2].item() // 2 + 2 : box_position[i, 1].item()
+                                + box_size[i, 2].item() // 2
+                                + 2,
                             ].fill_(DISTANCE_MAX)
             if rebar_settings is not None:
                 with wp.ScopedTimer("reset rebar", active=self.active, synchronize=self.synchronize):
