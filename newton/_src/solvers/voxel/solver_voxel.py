@@ -289,11 +289,9 @@ class SolverVoxel(SolverBase):
                 indices = wp.array(
                     wp.to_torch(world_indices)[wp.to_torch(self.generate_box)[wp.to_torch(world_indices)]]
                 )
-                self.model.voxel_wet[indices, :, self.shape[2] - box_settings["wall_thickness"] - 2:, :].fill_(DENSITY_MAX)
-                self.model.voxel_dry[indices, :, self.shape[2] - box_settings["wall_thickness"] - 2:, :].fill_(DENSITY_MAX)
-                self.model.voxel_distance[indices, :, self.shape[2] - box_settings["wall_thickness"] - 2:, :].fill_(
-                    DISTANCE_ZERO
-                )
+                self.model.voxel_wet[indices, :, self.shape[2] - 60 - 2 :, :].fill_(DENSITY_MAX)
+                self.model.voxel_dry[indices, :, self.shape[2] - 60 - 2 :, :].fill_(DENSITY_MAX)
+                self.model.voxel_distance[indices, :, self.shape[2] - 60 - 2 :, :].fill_(DISTANCE_ZERO)
                 with wp.ScopedTimer("reset box", active=self.active, synchronize=self.synchronize):
                     wp.launch(
                         set_box_kernel,
@@ -305,7 +303,6 @@ class SolverVoxel(SolverBase):
                             self.generate_box,
                             box_settings["box_position"],
                             box_settings["box_size"],
-                            box_settings["wall_thickness"],
                             world_indices,
                         ],
                     )
