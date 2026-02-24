@@ -457,7 +457,7 @@ def respreading_kernel(
             wp.int32(wp.rint(ray_dir[widx, i][1] * velocities[i] * t / h)),
             wp.int32(wp.rint((ray_dir[widx, i][2] * velocities[i] * t - 1.0 / 2.0 * 9.81 * t * t) / h)),
         )
-        if valid_pos(pos, wet.shape):
+        if valid_pos(pos, wet.shape, 1):
             w1 = wet[widx, pos[0], pos[1], pos[2]]
             d1 = dry[widx, pos[0], pos[1], pos[2]]
             if not is_wall(w1, d1):
