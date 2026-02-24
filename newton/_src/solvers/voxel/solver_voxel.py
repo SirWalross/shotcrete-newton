@@ -28,6 +28,7 @@ from ...core.types import override
 from ...sim import Contacts, Control, Model, State, VoxelRewards
 from ..solver import SolverBase
 from .kernels import (
+    DENSITY_HALF,
     DENSITY_MAX,
     DENSITY_ZERO,
     DISTANCE_MAX,
@@ -215,7 +216,7 @@ class SolverVoxel(SolverBase):
             with wp.ScopedTimer("solidify", active=self.active, synchronize=self.synchronize):
                 wp.launch(
                     solidify_kernel,
-                    dim=(self.shape[0], self.shape[1], self.shape[2]),
+                    dim=(self.shape[0], self.shape[1], self.shape[2] - 2),
                     inputs=[self.model.voxel_wet, self.model.voxel_dry, self.tc, self.global_bbox],
                 )
             with wp.ScopedTimer("drip", active=self.active, synchronize=self.synchronize):
@@ -286,32 +287,43 @@ class SolverVoxel(SolverBase):
             self.model.voxel_distance[world_indices, :, self.shape[2] - 2 :, :].fill_(DISTANCE_ZERO)
 
             if box_settings is not None:
-                for i, widx in enumerate(wp.to_torch(world_indices)):
-                    if wp.to_torch(self.generate_box)[widx]:
-                        self.model.voxel_wet[
-                            widx.item(), :, self.shape[2] - box_settings["wall_thickness"][i].item() - 2 :, :
-                        ].fill_(DENSITY_MAX)
-                        self.model.voxel_dry[
-                            widx.item(), :, self.shape[2] - box_settings["wall_thickness"][i].item() - 2 :, :
-                        ].fill_(DENSITY_MAX)
-                        self.model.voxel_distance[
-                            widx.item(), :, self.shape[2] - box_settings["wall_thickness"][i].item() - 2 :, :
-                        ].fill_(DISTANCE_ZERO)
                 with wp.ScopedTimer("reset box", active=self.active, synchronize=self.synchronize):
-                    wp.launch(
-                        set_box_kernel,
-                        dim=(world_indices.shape[0],),
-                        inputs=[
-                            self.model.voxel_wet,
-                            self.model.voxel_dry,
-                            self.model.voxel_distance,
-                            self.generate_box,
-                            box_settings["box_position"],
-                            box_settings["box_size"],
-                            wp.array(box_settings["wall_thickness"], dtype=wp.int32),
-                            world_indices,
-                        ],
-                    )
+                    box_position = wp.to_torch(box_settings["box_position"])
+                    box_size = wp.to_torch(box_settings["box_size"])
+                    for i, widx in enumerate(wp.to_torch(world_indices)):
+                        if wp.to_torch(self.generate_box)[widx.item()]:
+                            # create wall
+                            self.model.voxel_wet[widx.item(), :, -box_size[i, 1].item() - 2 : -2, :].fill_(DENSITY_MAX)
+                            self.model.voxel_dry[widx.item(), :, -box_size[i, 1].item() - 2 : -2, :].fill_(DENSITY_MAX)
+                            self.model.voxel_distance[widx.item(), :, -box_size[i, 1].item() - 2 : -2, :].fill_(
+                                DISTANCE_ZERO
+                            )
+
+                            # create box in wall
+                            self.model.voxel_wet[
+                                widx.item(),
+                                box_position[i, 0].item() - box_size[i, 0].item() // 2 : box_position[i, 0].item()
+                                + box_size[i, 0].item() // 2,
+                                -box_size[i, 1].item() - 2 : -2,
+                                box_position[i, 1].item() - box_size[i, 2].item() // 2 : box_position[i, 1].item()
+                                + box_size[i, 2].item() // 2,
+                            ].fill_(DENSITY_ZERO)
+                            self.model.voxel_dry[
+                                widx.item(),
+                                box_position[i, 0].item() - box_size[i, 0].item() // 2 : box_position[i, 0].item()
+                                + box_size[i, 0].item() // 2,
+                                -box_size[i, 1].item() - 2 : -2,
+                                box_position[i, 1].item() - box_size[i, 2].item() // 2 : box_position[i, 1].item()
+                                + box_size[i, 2].item() // 2,
+                            ].fill_(DENSITY_ZERO)
+                            self.model.voxel_distance[
+                                widx.item(),
+                                box_position[i, 0].item() - box_size[i, 0].item() // 2 : box_position[i, 0].item()
+                                + box_size[i, 0].item() // 2,
+                                -box_size[i, 1].item() - 2 : -2,
+                                box_position[i, 1].item() - box_size[i, 2].item() // 2 : box_position[i, 1].item()
+                                + box_size[i, 2].item() // 2,
+                            ].fill_(DISTANCE_MAX)
             if rebar_settings is not None:
                 with wp.ScopedTimer("reset rebar", active=self.active, synchronize=self.synchronize):
                     wp.launch(
@@ -359,14 +371,17 @@ class SolverVoxel(SolverBase):
         box_position,
         count,
     ):
-        for i, widx in enumerate(env_indices):
-            for c in range(count[i].item()):
-                self.model.voxel_dry[
-                    widx,
-                    box_position[i, c, 0] - box_size[i, c, 0] // 2 : box_position[i, c, 0] + box_size[i, c, 0] // 2,
-                    -box_size[i, c, 1] - 2 : -2,
-                    box_position[i, c, 1] - box_size[i, c, 2] // 2 : box_position[i, c, 1] + box_size[i, c, 2] // 2,
-                ].fill_(DENSITY_MAX)
+        with wp.ScopedTimer("env randomization", active=self.active, synchronize=self.synchronize):
+            for i, widx in enumerate(env_indices):
+                for c in range(count[i].item()):
+                    self.model.voxel_dry[
+                        widx.item(),
+                        box_position[i, c, 0].item() - box_size[i, c, 0].item() // 2 : box_position[i, c, 0].item()
+                        + box_size[i, c, 0].item() // 2,
+                        -box_size[i, c, 1].item() - 2 : -2,
+                        box_position[i, c, 1].item() - box_size[i, c, 2].item() // 2 : box_position[i, c, 1].item()
+                        + box_size[i, c, 2].item() // 2,
+                    ].fill_(DENSITY_MAX)
 
     def random_removal(
         self,
@@ -374,31 +389,40 @@ class SolverVoxel(SolverBase):
         box_size,
         box_position,
     ):
-        for i, widx in enumerate(env_indices):
-            self.model.voxel_wet[
-                widx,
-                box_position[i, 0] - box_size[i, 0] // 2 : box_position[i, 0] + box_size[i, 0] // 2,
-                : box_size[i, 1],
-                box_position[i, 1] - box_size[i, 2] // 2 : box_position[i, 1] + box_size[i, 2] // 2,
-            ].fill_(DENSITY_ZERO)
-            self.model.voxel_dry[
-                widx,
-                box_position[i, 0] - box_size[i, 0] // 2 : box_position[i, 0] + box_size[i, 0] // 2,
-                : box_size[i, 1],
-                box_position[i, 1] - box_size[i, 2] // 2 : box_position[i, 1] + box_size[i, 2] // 2,
-            ].fill_(DENSITY_ZERO)
-            self.model.voxel_load[
-                widx,
-                box_position[i, 0] - box_size[i, 0] // 2 : box_position[i, 0] + box_size[i, 0] // 2,
-                : box_size[i, 1],
-                box_position[i, 1] - box_size[i, 2] // 2 : box_position[i, 1] + box_size[i, 2] // 2,
-            ].fill_(LOAD_ZERO)
-            self.model.voxel_distance[
-                widx,
-                box_position[i, 0] - box_size[i, 0] // 2 : box_position[i, 0] + box_size[i, 0] // 2,
-                : box_size[i, 1],
-                box_position[i, 1] - box_size[i, 2] // 2 : box_position[i, 1] + box_size[i, 2] // 2,
-            ].fill_(DISTANCE_MAX)
+        with wp.ScopedTimer("random removal", active=self.active, synchronize=self.synchronize):
+            for i, widx in enumerate(env_indices):
+                self.model.voxel_wet[
+                    widx.item(),
+                    box_position[i, 0].item() - box_size[i, 0].item() // 2 : box_position[i, 0].item()
+                    + box_size[i, 0].item() // 2,
+                    : box_size[i, 1].item(),
+                    box_position[i, 1].item() - box_size[i, 2].item() // 2 : box_position[i, 1].item()
+                    + box_size[i, 2].item() // 2,
+                ].fill_(DENSITY_ZERO)
+                self.model.voxel_dry[
+                    widx.item(),
+                    box_position[i, 0].item() - box_size[i, 0].item() // 2 : box_position[i, 0].item()
+                    + box_size[i, 0].item() // 2,
+                    : box_size[i, 1].item(),
+                    box_position[i, 1].item() - box_size[i, 2].item() // 2 : box_position[i, 1].item()
+                    + box_size[i, 2].item() // 2,
+                ].fill_(DENSITY_ZERO)
+                self.model.voxel_load[
+                    widx.item(),
+                    box_position[i, 0].item() - box_size[i, 0].item() // 2 : box_position[i, 0].item()
+                    + box_size[i, 0].item() // 2,
+                    : box_size[i, 1].item(),
+                    box_position[i, 1].item() - box_size[i, 2].item() // 2 : box_position[i, 1].item()
+                    + box_size[i, 2].item() // 2,
+                ].fill_(LOAD_ZERO)
+                self.model.voxel_distance[
+                    widx.item(),
+                    box_position[i, 0].item() - box_size[i, 0].item() // 2 : box_position[i, 0].item()
+                    + box_size[i, 0].item() // 2,
+                    : box_size[i, 1].item(),
+                    box_position[i, 1].item() - box_size[i, 2].item() // 2 : box_position[i, 1].item()
+                    + box_size[i, 2].item() // 2,
+                ].fill_(DISTANCE_MAX)
 
     def update_rewards(self, rewards: VoxelRewards):
         with wp.ScopedTimer("rewards", active=self.active, synchronize=self.synchronize):

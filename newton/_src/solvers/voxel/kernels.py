@@ -52,7 +52,7 @@ def solidify_kernel(
     if i < bbox[widx, 0] - 2 or i > bbox[widx, 3] + 2 or j < bbox[widx, 1] - 2 or j > bbox[widx, 4] + 2:
         return
 
-    min_z = wp.max(0, bbox[widx, 2] - 2)
+    min_z = wp.max(2, bbox[widx, 2] - 2)
     max_z = wp.min(wet.shape[3], bbox[widx, 5] + 3)
 
     t = tc[widx]
@@ -65,14 +65,10 @@ def solidify_kernel(
         d = dry[widx, i, j, k]
         if is_wall(w, d):
             continue
-
         # calculate part that solidifes
-        w = saturating_add(w, d) - d
-        diff = wp.min(w, t)
-
-        # account for if (w + d) > DENSITY_MAX
-        wet[widx, i, j, k] = saturating_sub(w - diff, overflow_part(w, d))
-        dry[widx, i, j, k] = d + diff
+        solidify = wp.min(w, t)
+        dry[widx, i, j, k] = saturating_add(d, solidify)
+        dry[widx, i, j, k] = saturating_sub(w, solidify)
 
 
 @wp.kernel
