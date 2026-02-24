@@ -913,39 +913,6 @@ def spray_reward_kernel(
 
 
 @wp.kernel
-def set_box_kernel(
-    wet: wp.array4d(dtype=wp.uint8),
-    dry: wp.array4d(dtype=wp.uint8),
-    distance: wp.array4d(dtype=wp.uint8),
-    generate_box: wp.array(dtype=wp.bool),
-    box_position: wp.array(dtype=wp.vec2i),
-    box_size: wp.array(dtype=wp.vec3i),
-    indices: wp.array(dtype=wp.int32),
-):
-    w = wp.tid()
-    widx = indices[w]
-    if not generate_box[widx]:
-        return
-
-    # calculate box corners
-    ur = wp.vec2i(
-        wp.clamp(box_position[w][0] + box_size[w][0] // 2, 0, wet.shape[1]),
-        wp.clamp(box_position[w][1] + box_size[w][2] // 2, 0, wet.shape[3] - 4),
-    )
-    dl = wp.vec2i(
-        wp.clamp(box_position[w][0] - box_size[w][0] // 2, 0, wet.shape[1]),
-        wp.clamp(box_position[w][1] - box_size[w][2] // 2, 0, wet.shape[3] - 4),
-    )
-
-    for x in range(dl[0], ur[0]):
-        for z in range(dl[1], ur[1]):
-            for y in range(wet.shape[2] - 60 - 2, wet.shape[2] - 2):
-                wet[widx, x, y, z + 2] = DENSITY_ZERO
-                dry[widx, x, y, z + 2] = DENSITY_ZERO
-                distance[widx, x, y, z + 2] = DISTANCE_MAX
-
-
-@wp.kernel
 def set_rebar_kernel(
     wet: wp.array4d(dtype=wp.uint8),
     dry: wp.array4d(dtype=wp.uint8),

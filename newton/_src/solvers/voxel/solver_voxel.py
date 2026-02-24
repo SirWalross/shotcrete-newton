@@ -45,7 +45,6 @@ from .kernels import (
     reset_bbox_kernel,
     reset_global_bbox_kernel,
     respreading_kernel,
-    set_box_kernel,
     set_rebar_kernel,
     solidify_kernel,
     spray_backtrack_kernel,
@@ -286,26 +285,48 @@ class SolverVoxel(SolverBase):
             self.model.voxel_distance[world_indices, :, self.shape[2] - 2 :, :].fill_(DISTANCE_ZERO)
 
             if box_settings is not None:
-                indices = wp.array(
-                    wp.to_torch(world_indices)[wp.to_torch(self.generate_box)[wp.to_torch(world_indices)]]
-                )
-                self.model.voxel_wet[indices, :, self.shape[2] - 60 - 2 :, :].fill_(DENSITY_MAX)
-                self.model.voxel_dry[indices, :, self.shape[2] - 60 - 2 :, :].fill_(DENSITY_MAX)
-                self.model.voxel_distance[indices, :, self.shape[2] - 60 - 2 :, :].fill_(DISTANCE_ZERO)
                 with wp.ScopedTimer("reset box", active=self.active, synchronize=self.synchronize):
-                    wp.launch(
-                        set_box_kernel,
-                        dim=(world_indices.shape[0],),
-                        inputs=[
-                            self.model.voxel_wet,
-                            self.model.voxel_dry,
-                            self.model.voxel_distance,
-                            self.generate_box,
-                            box_settings["box_position"],
-                            box_settings["box_size"],
-                            world_indices,
-                        ],
+                    indices = wp.array(
+                        wp.to_torch(world_indices)[wp.to_torch(self.generate_box)[wp.to_torch(world_indices)]]
                     )
+                    box_position = wp.to_torch(box_settings["box_position"])
+                    box_size = wp.to_torch(box_settings["box_size"])
+                    for i, widx in enumerate(wp.to_torch(indices)):
+                        # create wall
+                        self.model.voxel_wet[widx.item(), :, -box_size[i, 1].item() - 2 : -2, :].fill_(DENSITY_MAX)
+                        self.model.voxel_dry[widx.item(), :, -box_size[i, 1].item() - 2 : -2, :].fill_(DENSITY_MAX)
+                        self.model.voxel_distance[widx.item(), :, -box_size[i, 1].item() - 2 : -2, :].fill_(
+                            DISTANCE_ZERO
+                        )
+
+                        # create box in wall
+                        self.model.voxel_wet[
+                            widx.item(),
+                            box_position[i, 0].item() - box_size[i, 0].item() // 2 : box_position[i, 0].item()
+                            + box_size[i, 0].item() // 2,
+                            -box_size[i, 1].item() - 2 : -2,
+                            box_position[i, 1].item() - box_size[i, 2].item() // 2 + 2 : box_position[i, 1].item()
+                            + box_size[i, 2].item() // 2
+                            + 2,
+                        ].fill_(DENSITY_ZERO)
+                        self.model.voxel_dry[
+                            widx.item(),
+                            box_position[i, 0].item() - box_size[i, 0].item() // 2 : box_position[i, 0].item()
+                            + box_size[i, 0].item() // 2,
+                            -box_size[i, 1].item() - 2 : -2,
+                            box_position[i, 1].item() - box_size[i, 2].item() // 2 + 2 : box_position[i, 1].item()
+                            + box_size[i, 2].item() // 2
+                            + 2,
+                        ].fill_(DENSITY_ZERO)
+                        self.model.voxel_distance[
+                            widx.item(),
+                            box_position[i, 0].item() - box_size[i, 0].item() // 2 : box_position[i, 0].item()
+                            + box_size[i, 0].item() // 2,
+                            -box_size[i, 1].item() - 2 : -2,
+                            box_position[i, 1].item() - box_size[i, 2].item() // 2 + 2 : box_position[i, 1].item()
+                            + box_size[i, 2].item() // 2
+                            + 2,
+                        ].fill_(DISTANCE_MAX)
             if rebar_settings is not None:
                 with wp.ScopedTimer("reset rebar", active=self.active, synchronize=self.synchronize):
                     wp.launch(
