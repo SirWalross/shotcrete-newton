@@ -831,6 +831,23 @@ def mass_ratio(r: wp.float32):
 
 
 @wp.kernel
+def spray_tcp_position(
+    droplet_positions: wp.array2d(dtype=wp.vec3i),
+    droplet_count: wp.int32,
+    tcp_position: wp.array(dtype=wp.vec3i),
+):
+    widx = wp.tid()
+    x = wp.float64(0.0)
+    y = wp.float64(0.0)
+    z = wp.float64(0.0)
+    for i in range(droplet_count):
+        x += wp.float64(droplet_positions[widx, i][0]) / wp.float64(droplet_count)
+        y += wp.float64(droplet_positions[widx, i][1]) / wp.float64(droplet_count)
+        z += wp.float64(droplet_positions[widx, i][2]) / wp.float64(droplet_count)
+    tcp_position[widx] = wp.vec3i(wp.int32(x), wp.int32(y), wp.int32(z))
+
+
+@wp.kernel
 def spray_reward_kernel(
     wet: wp.array4d(dtype=wp.uint8),
     dry: wp.array4d(dtype=wp.uint8),

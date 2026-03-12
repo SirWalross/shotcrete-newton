@@ -54,6 +54,7 @@ from .kernels import (
     spray_rebound_kernel,
     spray_redistribution_kernel,
     spray_reward_kernel,
+    spray_tcp_position,
     spray_trajectory_kernel,
     sum_kernel,
     update_bbox_kernel,
@@ -416,6 +417,14 @@ class SolverVoxel(SolverBase):
     def update_rewards(self, rewards: VoxelRewards):
         with wp.ScopedTimer("rewards", active=self.active, synchronize=self.synchronize):
             with wp.ScopedTimer("spray reward calculation", active=self.active, synchronize=self.synchronize):
+                wp.launch(
+                    spray_tcp_position,
+                    dim=(self.shape[0],),
+                    inputs=[
+                        self.ray_trajectory[:, :, 0], self.k
+                    ],
+                    outputs=[rewards.tcp_position],
+                )
                 wp.launch(
                     spray_reward_kernel,
                     dim=(self.shape[0], self.shape[1] - 2, self.shape[3] - 2),

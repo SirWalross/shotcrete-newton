@@ -26,6 +26,7 @@ class VoxelRewards:
             self.prev_air_gap = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
             self.adhesion_failure_amount = wp.zeros((size[0],), dtype=wp.float32)
             self.out_of_bounds_spray = wp.zeros((size[0],), dtype=wp.float32)
+            self.tcp_position = wp.zeros((size[0],), dtype=wp.vec3i)
 
     def step(self):
         self.prev_distance = wp.clone(self.distance)
@@ -39,6 +40,7 @@ class VoxelRewards:
         self.air_gap.zero_()
         self.adhesion_failure_amount.zero_()
         self.out_of_bounds_spray.zero_()
+        self.tcp_position.zero_()
 
     def reset(self, world_indices: wp.array(dtype=int)):
         self.distance[world_indices].zero_()
@@ -51,6 +53,7 @@ class VoxelRewards:
         self.prev_air_gap[world_indices].zero_()
         self.adhesion_failure_amount[world_indices].zero_()
         self.out_of_bounds_spray[world_indices].zero_()
+        self.tcp_position[world_indices].zero_()
 
     @property
     def device(self):
