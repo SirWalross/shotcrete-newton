@@ -905,6 +905,30 @@ def spray_reward_kernel(
 
 
 @wp.kernel
+def render_height_kernel(
+    wet: wp.array4d(dtype=wp.uint8),
+    dry: wp.array4d(dtype=wp.uint8),
+    h: wp.float32,
+    decimation: wp.int32,
+    height: wp.array3d(dtype=wp.float32),
+):
+    """Render-only top-surface height map.
+
+    Mirrors the ``height`` output of :func:`spray_reward_kernel` (the height of the topmost
+    occupied voxel in each column) but writes into a grid decimated by ``decimation`` that is
+    independent of the rewards grid. Used purely for visualization, so it stops at the first
+    surface hit and ignores the rebar/air-gap bookkeeping.
+    """
+    widx, i, k = wp.tid()
+    for j in range(wet.shape[2]):
+        w = wet[widx, i + 1, j, k + 2]
+        d = dry[widx, i + 1, j, k + 2]
+        if not total_density_is_smaller(w, d, DENSITY_HALF):
+            wp.atomic_add(height, widx, i // decimation, k // decimation, wp.float32(wet.shape[2] - j - 2) * h)
+            return
+
+
+@wp.kernel
 def set_rebar_kernel(
     wet: wp.array4d(dtype=wp.uint8),
     dry: wp.array4d(dtype=wp.uint8),

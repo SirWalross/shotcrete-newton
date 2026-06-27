@@ -5,9 +5,15 @@ from warp.context import Devicelike
 
 
 class VoxelRewards:
-    def __init__(self, size, decimation: int, device: Devicelike = None):
+    def __init__(self, size, decimation: int, device: Devicelike = None, render_decimation: int | None = None):
         self.size = size
         self.decimation = decimation
+        # Decimation used solely for the rendered height-map. Defaults to ``decimation`` so that,
+        # unless an env explicitly requests a finer render grid, the renderer shares the (decimated)
+        # rewards grid and no extra memory/compute is used. When it differs from ``decimation`` a
+        # separate ``render_distance`` grid is allocated and populated by the solver; all reward,
+        # termination and observation maths keep operating on the unchanged ``decimation`` grids.
+        self.render_decimation = decimation if render_decimation is None else render_decimation
         with wp.ScopedDevice(device):
             # rigid contacts
             self.distance = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
@@ -28,6 +34,14 @@ class VoxelRewards:
             self.out_of_bounds_spray = wp.zeros((size[0],), dtype=wp.float32)
             self.tcp_position = wp.zeros((size[0],), dtype=wp.vec3i)
 
+            # render-only height map; aliases `distance` when no separate render grid is requested.
+            if self.render_decimation == self.decimation:
+                self.render_distance = self.distance
+            else:
+                self.render_distance = wp.zeros(
+                    (size[0], size[1] // self.render_decimation, size[3] // self.render_decimation), dtype=wp.float32
+                )
+
     def step(self):
         self.prev_distance = wp.clone(self.distance)
         self.prev_distance_without_air_gap = wp.clone(self.distance_without_air_gap)
@@ -41,6 +55,8 @@ class VoxelRewards:
         self.adhesion_failure_amount.zero_()
         self.out_of_bounds_spray.zero_()
         self.tcp_position.zero_()
+        if self.render_distance is not self.distance:
+            self.render_distance.zero_()
 
     def reset(self, world_indices: wp.array(dtype=int)):
         self.distance[world_indices].zero_()
@@ -54,6 +70,8 @@ class VoxelRewards:
         self.adhesion_failure_amount[world_indices].zero_()
         self.out_of_bounds_spray[world_indices].zero_()
         self.tcp_position[world_indices].zero_()
+        if self.render_distance is not self.distance:
+            self.render_distance[world_indices].zero_()
 
     @property
     def device(self):

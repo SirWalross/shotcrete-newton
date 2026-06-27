@@ -42,6 +42,7 @@ from .kernels import (
     initialize_load_kernel,
     out_of_bounds_spray_kernel,
     randomize_directions_kernel,
+    render_height_kernel,
     reset_bbox_kernel,
     reset_global_bbox_kernel,
     respreading_kernel,
@@ -442,6 +443,20 @@ class SolverVoxel(SolverBase):
                         rewards.air_gap,
                     ],
                 )
+                # Populate the independent, finer render grid (visualization only). Skipped when the
+                # render grid aliases the rewards grid (render_decimation == decimation).
+                if rewards.render_decimation != rewards.decimation:
+                    wp.launch(
+                        render_height_kernel,
+                        dim=(self.shape[0], self.shape[1] - 2, self.shape[3] - 2),
+                        inputs=[
+                            self.model.voxel_wet,
+                            self.model.voxel_dry,
+                            self.h,
+                            rewards.render_decimation,
+                        ],
+                        outputs=[rewards.render_distance],
+                    )
             with wp.ScopedTimer("out of bounds spray calculation", active=self.active, synchronize=self.synchronize):
                 wp.launch(
                     out_of_bounds_spray_kernel,
