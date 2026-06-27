@@ -852,8 +852,12 @@ def spray_reward_kernel(
     wet: wp.array4d(dtype=wp.uint8),
     dry: wp.array4d(dtype=wp.uint8),
     h: wp.float32,
+    occlusion_distance: wp.array(dtype=wp.float32),
+    position: wp.array(dtype=wp.vec3i),
+    prev_occluded: wp.array3d(dtype=wp.float32),
     decimation: wp.int32,
     height: wp.array3d(dtype=wp.float32),
+    height_occluded: wp.array3d(dtype=wp.float32),
     height_without_rebar: wp.array3d(dtype=wp.float32),
     height_without_air_gap: wp.array3d(dtype=wp.float32),
     height_sq: wp.array3d(dtype=wp.float32),
@@ -902,6 +906,32 @@ def spray_reward_kernel(
                 local_height_without_air_gap -= h
     wp.atomic_add(air_gap, widx, i // decimation, k // decimation, local_gap)
     wp.atomic_add(height_without_air_gap, widx, i // decimation, k // decimation, local_height_without_air_gap)
+
+    # Occluded lidar view: within `occlusion_distance` of the nozzle (x, z) the spray blocks the
+    # sensor, so the cell keeps its last-seen depth (carried forward via `prev_occluded`); otherwise
+    # the current surface height is used. The whole decimated cell shares one visible/occluded
+    # decision (grid-aligned distance), and the occluded branch divides by decimation^2 so that the
+    # per-column atomic adds sum back to exactly `prev_occluded` (same units as `height`).
+    if (
+        wp.length(
+            wp.vec2(
+                wp.float32((i // decimation) * decimation) * h - wp.float32(position[widx][0]) * h,
+                wp.float32((k // decimation) * decimation) * h - wp.float32(position[widx][2]) * h,
+            )
+        )
+        > occlusion_distance[widx]
+    ):
+        # spray does not block lidar
+        wp.atomic_add(height_occluded, widx, i // decimation, k // decimation, local_height)
+    else:
+        # spray blocks lidar -> keep last-seen depth
+        wp.atomic_add(
+            height_occluded,
+            widx,
+            i // decimation,
+            k // decimation,
+            prev_occluded[widx, i // decimation, k // decimation] / wp.float32(decimation * decimation),
+        )
 
 
 @wp.kernel

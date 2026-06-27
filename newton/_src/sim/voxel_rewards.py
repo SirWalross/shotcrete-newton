@@ -18,6 +18,13 @@ class VoxelRewards:
             # rigid contacts
             self.distance = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
             self.prev_distance = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
+            # Depth map as seen by an occluded lidar: cells within ``occlusion_distance`` of the
+            # nozzle keep their last-seen value (the spray blocks the sensor there). Maintained
+            # entirely by the solver; ``prev_distance_occluded`` carries the last-seen values forward.
+            self.distance_occluded = wp.zeros((size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32)
+            self.prev_distance_occluded = wp.zeros(
+                (size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32
+            )
             self.distance_without_rebar = wp.zeros(
                 (size[0], size[1] // decimation, size[3] // decimation), dtype=wp.float32
             )
@@ -46,8 +53,10 @@ class VoxelRewards:
         self.prev_distance = wp.clone(self.distance)
         self.prev_distance_without_air_gap = wp.clone(self.distance_without_air_gap)
         self.prev_air_gap = wp.clone(self.air_gap)
+        self.prev_distance_occluded = wp.clone(self.distance_occluded)
 
         self.distance.zero_()
+        self.distance_occluded.zero_()
         self.distance_without_rebar.zero_()
         self.distance_without_air_gap.zero_()
         self.smoothness.zero_()
@@ -61,6 +70,8 @@ class VoxelRewards:
     def reset(self, world_indices: wp.array(dtype=int)):
         self.distance[world_indices].zero_()
         self.prev_distance[world_indices].zero_()
+        self.distance_occluded[world_indices].zero_()
+        self.prev_distance_occluded[world_indices].zero_()
         self.distance_without_rebar[world_indices].zero_()
         self.distance_without_air_gap[world_indices].zero_()
         self.prev_distance_without_air_gap[world_indices].zero_()

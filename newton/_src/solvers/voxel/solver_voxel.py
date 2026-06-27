@@ -124,6 +124,7 @@ class SolverVoxel(SolverBase):
         generate_rebar: bool = False,
         generate_box: bool = False,
         rebound: bool = False,
+        occlusion_distance: float = 0.0,
     ):
         super().__init__(model=model)
 
@@ -151,6 +152,8 @@ class SolverVoxel(SolverBase):
         self.adhesion_strength = wp.full((self.shape[0],), adhesion_strength, dtype=wp.float32)
         self.compression_strength = wp.full((self.shape[0],), compression_strength, dtype=wp.float32)
         self.wet_strength_penalty = wp.full((self.shape[0],), wet_strength_penalty, dtype=wp.float32)
+        # Per-world lidar occlusion radius (m); 0 disables occlusion (occluded view == clean view).
+        self.occlusion_distance = wp.full((self.shape[0],), occlusion_distance, dtype=wp.float32)
 
         self.ball_indices = wp.array(get_sphere_indices(s // 2), dtype=wp.vec3i)
         self.positions = wp.zeros((self.shape[0], self.k), dtype=wp.vec3i)
@@ -433,10 +436,14 @@ class SolverVoxel(SolverBase):
                         self.model.voxel_wet,
                         self.model.voxel_dry,
                         self.h,
+                        self.occlusion_distance,
+                        rewards.tcp_position,
+                        rewards.prev_distance_occluded,
                         rewards.decimation,
                     ],
                     outputs=[
                         rewards.distance,
+                        rewards.distance_occluded,
                         rewards.distance_without_rebar,
                         rewards.distance_without_air_gap,
                         rewards.smoothness,
