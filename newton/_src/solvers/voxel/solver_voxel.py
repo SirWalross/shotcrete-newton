@@ -783,6 +783,7 @@ class SolverVoxel(SolverBase):
                 outputs=[self.ray_rebound_trajectory],
             )
         if self.redistribution:
+            print(f"droplet mass before: {wp.to_torch(self.droplet_mass).sum()}")
             with wp.ScopedTimer("spray redistribution", active=self.active, synchronize=self.synchronize):
                 with wp.ScopedTimer("spray overlap", active=self.active, synchronize=self.synchronize):
                     wp.launch(
@@ -807,7 +808,9 @@ class SolverVoxel(SolverBase):
                                 self.k,
                             ],
                         )
+            print(f"droplet mass end: {wp.to_torch(self.droplet_mass).sum()}")
         with wp.ScopedTimer("spray deposit", active=self.active, synchronize=self.synchronize):
+            before = wp.to_torch(self.model.voxel_wet).sum()
             for k in range(self.backtrack_count):
                 self.density.zero_()
                 self.neighbour_count.zero_()
@@ -875,6 +878,7 @@ class SolverVoxel(SolverBase):
                 ],
             )
             self.update_rebound_distances()
+            print(f"voxel mass diff: {wp.to_torch(self.model.voxel_wet).sum() - before}")
         with wp.ScopedTimer("update bbox", active=self.active, synchronize=self.synchronize):
             wp.launch(
                 update_bbox_kernel,
