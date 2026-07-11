@@ -575,7 +575,7 @@ def spray_rebound_kernel(
         distance = wp.length(wp.vec3f(ray_hit_pos[widx, i]) - wp.vec3f(ray_pos[widx, i])) * h
 
         # calculate rebound rate
-        rate = wp.min(0.1 + 0.2 * wp.abs(wp.sin(angle)) + 0.3 * (1.2 - distance) * (1.2 - distance), 1.0)
+        rate = wp.min(0.1 + 0.6 * wp.abs(wp.sin(angle)) + 0.8 * (1.0 - distance) * (1.0 - distance), 1.0)
         mass = droplet_mass[widx, i]
         rebound_amount[widx, i] = rate * mass
         droplet_mass[widx, i] -= rate * droplet_mass[widx, i]
@@ -606,17 +606,25 @@ def spray_backtrack_kernel(
 def spray_overlap_kernel(
     voxels: wp.array2d(dtype=wp.vec3i),
     overlap_distance: wp.array(dtype=wp.float32),
+    mass: wp.array2d(dtype=wp.float32),
     k: wp.int32,
     overlap: wp.array2d(dtype=wp.float32),
 ):
     widx, i = wp.tid()
-    value = wp.float32(-1.0)
+    # mass-weighted crowding: the overlap measures the local incident mass flux (the
+    # physical driver of the post-impact lateral flow), not just the ray density
+    value = wp.float32(0.0)
+    total = wp.float32(0.0)
     for j in range(k):
-        value += relu(
-            (overlap_distance[widx] - wp.length(wp.vec3f(voxels[widx, i]) - wp.vec3f(voxels[widx, j])))
-            / overlap_distance[widx]
-        )
-    overlap[widx, i] = (value / wp.float32(k) * 2.0) * (value / wp.float32(k) * 2.0) * (value / wp.float32(k) * 2.0)
+        m = relu(mass[widx, j])
+        total += m
+        if j != i:
+            value += m * relu(
+                (overlap_distance[widx] - wp.length(wp.vec3f(voxels[widx, i]) - wp.vec3f(voxels[widx, j])))
+                / overlap_distance[widx]
+            )
+    ratio = wp.where(total > 0.0, value / total * 2.0, wp.float32(0.0))
+    overlap[widx, i] = ratio * ratio * ratio
 
 
 @wp.func
@@ -637,22 +645,31 @@ def spray_redistribution_kernel(
     transforms: wp.array(dtype=wp.transform),
     overlap_distance: wp.array(dtype=wp.float32),
     anisotropic_distance_weight: wp.array(dtype=wp.float32),
+    redistribution_rate: wp.array(dtype=wp.float32),
     k: wp.int32,
 ):
     i, widx = wp.tid()
     direction = wp.transform_vector(transforms[widx], wp.vec3f(1.0, 0.0, 0.0))
     my_overlap = overlap[widx, i]
+    transfer_radius = 0.9 * overlap_distance[widx]
     for j in range(k):
         other_overlap = overlap[widx, j]
         if other_overlap > my_overlap:
             dist = anisotropic_distance(
                 wp.vec3f(voxels[widx, i]), wp.vec3f(voxels[widx, j]), direction, anisotropic_distance_weight[widx]
             )
-            ij_overlap = relu(((overlap_distance[widx] / 4.0) - dist) / (overlap_distance[widx] / 4.0))
-            # move mass from partner
-            diff = relu(mass[widx, j]) * (overlap[widx, j] - overlap[widx, i]) / overlap[widx, j] * 0.05 * ij_overlap
-            mass[widx, j] -= diff
-            mass[widx, i] += diff
+            ij_overlap = relu((transfer_radius - dist) / transfer_radius)
+            # move mass from partner; atomically, since every recipient thread updates
+            # its donors and plain read-modify-writes would lose updates (creating mass)
+            diff = (
+                relu(mass[widx, j])
+                * (overlap[widx, j] - overlap[widx, i])
+                / overlap[widx, j]
+                * redistribution_rate[widx]
+                * ij_overlap
+            )
+            wp.atomic_add(mass, widx, j, -diff)
+            wp.atomic_add(mass, widx, i, diff)
 
 
 @wp.kernel
@@ -800,7 +817,7 @@ def update_directions_kernel(
     mass: wp.array2d(dtype=wp.float32),
 ):
     widx, i = wp.tid()
-    z = 1.0 - (1.0 - wp.cos(nozzle_angle[widx])) * (wp.float32(i) + 0.5) / wp.float32(k)
+    z = 1.0 - (1.0 - wp.cos(nozzle_angle[widx] * 1.4)) * (wp.float32(i) + 0.5) / wp.float32(k)
     state = wp.rand_init(t[0])
     phi = wp.float32(i) * wp.pi * (3.0 - wp.sqrt(5.0)) + wp.randf(state, 0.0, wp.pi * 2.0)
     positions[widx, i] = wp.vec3i((wp.transform_get_translation(ee_transforms[widx]) - voxel_pos[widx]) / h) + wp.vec3i(
