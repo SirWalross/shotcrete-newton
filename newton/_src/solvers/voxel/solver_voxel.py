@@ -841,7 +841,6 @@ class SolverVoxel(SolverBase):
                             self.droplet_mass,
                             self.spray_neighbours,
                             self.density,
-                            self.i,
                         ],
                     )
             self.update_distances()
@@ -874,7 +873,6 @@ class SolverVoxel(SolverBase):
                     self.rebound_deposit_mass,
                     self.spray_neighbours,
                     self.density,
-                    self.i,
                 ],
             )
             self.update_rebound_distances()

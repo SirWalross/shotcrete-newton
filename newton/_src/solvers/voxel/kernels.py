@@ -731,7 +731,6 @@ def spray_distribution_kernel(
     remaining_mass: wp.array2d(dtype=wp.float32),
     spray_neighbours: wp.array3d(dtype=wp.float32),
     density: wp.array2d(dtype=wp.float32),
-    seed: wp.array(dtype=wp.int32),
 ):
     i, widx = wp.tid()
 
@@ -744,6 +743,7 @@ def spray_distribution_kernel(
     if density_ <= 0.0:
         return
 
+    carry = wp.float32(0.0)
     for j in range(ball_indices.shape[0]):
         pos = voxels[widx, i] + ball_indices[j]
         if not valid_pos(pos, wet.shape):
@@ -751,20 +751,15 @@ def spray_distribution_kernel(
         w = wet[widx, pos[0], pos[1], pos[2]]
         d = dry[widx, pos[0], pos[1], pos[2]]
         if total_density_is_smaller(w, d, DENSITY_MAX):
-            w_f32 = wp.float32(w) / DENSITY_MAX_F32
-            d_f32 = wp.float32(d) / DENSITY_MAX_F32
-            state = wp.rand_init(seed[0], j)
-            diff = (
-                wp.min(
-                    m * spray_neighbours[widx, i, j] / density[widx, i],
-                    relu(1.0 - w_f32 - d_f32),
-                )
-                * DENSITY_MAX_F32
-            )
-            diff = wp.where((diff - wp.floor(diff)) > wp.randf(state), wp.ceil(diff), wp.floor(diff))
-            if wp.uint8(diff) != DENSITY_ZERO:
-                wet[widx, pos[0], pos[1], pos[2]] = saturating_add(wp.uint8(diff), wet[widx, pos[0], pos[1], pos[2]])
-                rem -= diff / DENSITY_MAX_F32
+            capacity = relu(wp.float32(wp.int32(DENSITY_MAX) - wp.int32(w) - wp.int32(d)))
+            share = m * spray_neighbours[widx, i, j] / density_ * DENSITY_MAX_F32
+            diff = wp.min(wp.min(share, relu(rem) * DENSITY_MAX_F32), capacity)
+            total = diff + carry
+            q = wp.min(wp.floor(total), capacity)
+            carry = total - q
+            if q > 0.0:
+                wet[widx, pos[0], pos[1], pos[2]] = saturating_add(wp.uint8(q), wet[widx, pos[0], pos[1], pos[2]])
+                rem -= q / DENSITY_MAX_F32
     remaining_mass[widx, i] = rem
 
 
