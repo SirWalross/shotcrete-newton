@@ -106,6 +106,47 @@ def update_distances_kernel(
 
 
 @wp.kernel
+def global_update_distances_kernel(
+    wet: wp.array4d(dtype=wp.uint8),
+    dry: wp.array4d(dtype=wp.uint8),
+    distance: wp.array4d(dtype=wp.uint8),
+):
+    """Global distance-to-support relaxation, one sweep from the wall (y max) to y = 0.
+
+    Each thread owns the y-column of one (x, z) cell, so the y+1 term is always the
+    value updated earlier in the same sweep and wall-anchored distances reach the whole
+    deposit in a single pass. Lateral/vertical neighbour reads may be one pass stale,
+    which only leaves values conservatively high. Emptied voxels are reset to
+    ``DISTANCE_MAX`` so material removed without a local distance update (respreading,
+    redistribution) does not leave stale support behind.
+    """
+    widx, i, k = wp.tid()
+    ii = i + 1
+    kk = k + 1
+    for l in range(wet.shape[2] - 3):
+        j = wet.shape[2] - 3 - l
+        w = wet[widx, ii, j, kk]
+        d = dry[widx, ii, j, kk]
+        if is_wall(w, d):
+            # wall, floor, and rebar anchor the field at DISTANCE_ZERO
+            continue
+        if total_density_is_smaller(w, d, DENSITY_10_PERCENT):
+            distance[widx, ii, j, kk] = DISTANCE_MAX
+            continue
+        distance[widx, ii, j, kk] = wp.min(
+            distance[widx, ii, j, kk],
+            min_six_way(
+                saturating_add(distance[widx, ii + 1, j, kk], wp.uint8(2)),
+                saturating_add(distance[widx, ii - 1, j, kk], wp.uint8(2)),
+                saturating_add(distance[widx, ii, j + 1, kk], wp.uint8(2)),
+                saturating_add(distance[widx, ii, j - 1, kk], wp.uint8(2)),
+                saturating_add(distance[widx, ii, j, kk + 1], wp.uint8(5)),
+                saturating_add(distance[widx, ii, j, kk - 1], wp.uint8(1)),
+            ),
+        )
+
+
+@wp.kernel
 def initialize_load_kernel(
     wet: wp.array4d(dtype=wp.uint8), dry: wp.array4d(dtype=wp.uint8), current_load: wp.array4d(dtype=wp.int16)
 ):
@@ -196,6 +237,100 @@ def drop_down_kernel(
             write_pos += 1
         elif not total_density_is_smaller(wet[widx, i, j, k], dry[widx, i, j, k], DENSITY_HALF):
             write_pos = k + 1
+
+
+@wp.func
+def just_failed(wet: wp.uint8, dry: wp.uint8, load: wp.int16) -> bool:
+    # a voxel emptied by drop_down keeps its negative load until the next
+    # initialize_load pass, which makes just-failed voxels detectable without state
+    return total_density_is_smaller(wet, dry, DENSITY_HALF) and load < LOAD_ZERO
+
+
+@wp.func
+def crack_energy(wet: wp.uint8, dry: wp.uint8, load: wp.int16) -> wp.int32:
+    # a voxel emptied by drop_down keeps its negative load, which the failure-damage
+    # rounds use to store the crack energy it still carries
+    return wp.where(total_density_is_smaller(wet, dry, DENSITY_HALF), wp.max(-wp.int32(load), 0), 0)
+
+
+@wp.kernel
+def seed_failure_energy_kernel(
+    wet: wp.array4d(dtype=wp.uint8),
+    dry: wp.array4d(dtype=wp.uint8),
+    current_load: wp.array4d(dtype=wp.int16),
+    bbox: wp.array2d(dtype=wp.int32),
+    failure_damage: wp.array(dtype=wp.float32),
+):
+    """Charge the just-failed voxels with the crack energy ``failure_damage``."""
+    widx, i, j = wp.tid()
+    ii = i + 1
+    jj = j + 1
+    if not in_bbox_all_height(bbox[widx], wp.vec3i(ii, jj, 0)):
+        return
+    for k in range(1, wet.shape[3] - 1):
+        if not in_bbox(bbox[widx], wp.vec3i(ii, jj, k)):
+            continue
+        if just_failed(wet[widx, ii, jj, k], dry[widx, ii, jj, k], current_load[widx, ii, jj, k]):
+            current_load[widx, ii, jj, k] = wp.min(
+                current_load[widx, ii, jj, k], wp.int16(-wp.min(failure_damage[widx], 32767.0))
+            )
+
+
+@wp.kernel
+def failure_damage_kernel(
+    wet: wp.array4d(dtype=wp.uint8),
+    dry: wp.array4d(dtype=wp.uint8),
+    current_load: wp.array4d(dtype=wp.int16),
+    bbox: wp.array2d(dtype=wp.int32),
+    failure_damage_decay: wp.array(dtype=wp.float32),
+):
+    """Energy-driven crack propagation into the deposit.
+
+    Just-failed voxels (emptied by drop_down, load still negative) carry crack energy
+    ``-load``, seeded with ``failure_damage`` at the initial failure surface. Each
+    round, an occupied voxel next to the crack takes the largest neighbouring energy
+    minus ``failure_damage_decay`` off its load; if that breaks it (load < 0), the
+    next drop_down empties it and the remainder -- energy minus decay minus the
+    margin spent breaking the voxel -- travels on. The crack therefore reaches
+    ~``failure_damage / failure_damage_decay`` voxels in weak material and is
+    arrested earlier by well-supported (high-load) material. Voxels at exactly
+    ``LOAD_ZERO`` are spared so the re-deposited debris cannot re-fail and
+    double-count itself.
+    """
+    widx, i, j = wp.tid()
+    ii = i + 1
+    jj = j + 1
+    if not in_bbox_all_height(bbox[widx], wp.vec3i(ii, jj, 0)):
+        return
+    for k in range(1, wet.shape[3] - 1):
+        if not in_bbox(bbox[widx], wp.vec3i(ii, jj, k)):
+            continue
+        w = wet[widx, ii, jj, k]
+        d = dry[widx, ii, jj, k]
+        if is_wall(w, d) or total_density_is_smaller(w, d, DENSITY_HALF):
+            continue
+        if current_load[widx, ii, jj, k] <= LOAD_ZERO:
+            continue
+        e = crack_energy(wet[widx, ii + 1, jj, k], dry[widx, ii + 1, jj, k], current_load[widx, ii + 1, jj, k])
+        e = wp.max(
+            e, crack_energy(wet[widx, ii - 1, jj, k], dry[widx, ii - 1, jj, k], current_load[widx, ii - 1, jj, k])
+        )
+        e = wp.max(
+            e, crack_energy(wet[widx, ii, jj + 1, k], dry[widx, ii, jj + 1, k], current_load[widx, ii, jj + 1, k])
+        )
+        e = wp.max(
+            e, crack_energy(wet[widx, ii, jj - 1, k], dry[widx, ii, jj - 1, k], current_load[widx, ii, jj - 1, k])
+        )
+        e = wp.max(
+            e, crack_energy(wet[widx, ii, jj, k + 1], dry[widx, ii, jj, k + 1], current_load[widx, ii, jj, k + 1])
+        )
+        e = wp.max(
+            e, crack_energy(wet[widx, ii, jj, k - 1], dry[widx, ii, jj, k - 1], current_load[widx, ii, jj, k - 1])
+        )
+        e -= wp.int32(failure_damage_decay[widx])
+        if e > 0:
+            new_load = wp.int32(current_load[widx, ii, jj, k]) - e
+            current_load[widx, ii, jj, k] = wp.int16(wp.max(new_load, -32767))
 
 
 @wp.func
@@ -461,42 +596,42 @@ def respreading_kernel(
             w1 = wet[widx, pos[0], pos[1], pos[2]]
             d1 = dry[widx, pos[0], pos[1], pos[2]]
             if not is_wall(w1, d1):
-                wet[widx, pos[0], pos[1], pos[2]] = DENSITY_ZERO
+                wet[widx, pos[0], pos[1], pos[2]] = wp.uint8(wp.float32(w1) * sigma[widx])
             else:
                 w1 = wp.uint8(0)
-            w2 = wet[widx, pos[0] + 1, pos[1], pos[2]]
-            d2 = dry[widx, pos[0] + 1, pos[1], pos[2]]
-            if not is_wall(w2, d2):
-                wet[widx, pos[0] + 1, pos[1], pos[2]] = DENSITY_ZERO
-            else:
-                w2 = wp.uint8(0)
-            w3 = wet[widx, pos[0] - 1, pos[1], pos[2]]
-            d3 = dry[widx, pos[0] - 1, pos[1], pos[2]]
-            if not is_wall(w3, d3):
-                wet[widx, pos[0] - 1, pos[1], pos[2]] = DENSITY_ZERO
-            else:
-                w3 = wp.uint8(0)
-            w4 = wet[widx, pos[0], pos[1], pos[2] + 1]
-            d4 = dry[widx, pos[0], pos[1], pos[2] + 1]
-            if not is_wall(w4, d4):
-                wet[widx, pos[0], pos[1], pos[2] + 1] = DENSITY_ZERO
-            else:
-                w4 = wp.uint8(0)
-            w5 = wet[widx, pos[0], pos[1], pos[2] - 1]
-            d5 = dry[widx, pos[0], pos[1], pos[2] - 1]
-            if not is_wall(w5, d5):
-                wet[widx, pos[0], pos[1], pos[2] - 1] = DENSITY_ZERO
-            else:
-                w5 = wp.uint8(0)
+            # w2 = wet[widx, pos[0] + 1, pos[1], pos[2]]
+            # d2 = dry[widx, pos[0] + 1, pos[1], pos[2]]
+            # if not is_wall(w2, d2):
+            #     wet[widx, pos[0] + 1, pos[1], pos[2]] = DENSITY_ZERO
+            # else:
+            #     w2 = wp.uint8(0)
+            # w3 = wet[widx, pos[0] - 1, pos[1], pos[2]]
+            # d3 = dry[widx, pos[0] - 1, pos[1], pos[2]]
+            # if not is_wall(w3, d3):
+            #     wet[widx, pos[0] - 1, pos[1], pos[2]] = DENSITY_ZERO
+            # else:
+            #     w3 = wp.uint8(0)
+            # w4 = wet[widx, pos[0], pos[1], pos[2] + 1]
+            # d4 = dry[widx, pos[0], pos[1], pos[2] + 1]
+            # if not is_wall(w4, d4):
+            #     wet[widx, pos[0], pos[1], pos[2] + 1] = DENSITY_ZERO
+            # else:
+            #     w4 = wp.uint8(0)
+            # w5 = wet[widx, pos[0], pos[1], pos[2] - 1]
+            # d5 = dry[widx, pos[0], pos[1], pos[2] - 1]
+            # if not is_wall(w5, d5):
+            #     wet[widx, pos[0], pos[1], pos[2] - 1] = DENSITY_ZERO
+            # else:
+            #     w5 = wp.uint8(0)
             wp.atomic_add(
                 droplet_mass,
                 widx,
                 i,
-                wp.float32(w1) / 255.0
-                + wp.float32(w2) / 255.0
-                + wp.float32(w3) / 255.0
-                + wp.float32(w4) / 255.0
-                + wp.float32(w5) / 255.0,
+                wp.float32(w1) * sigma[widx] / 255.0,
+                # + wp.float32(w2) / 255.0
+                # + wp.float32(w3) / 255.0
+                # + wp.float32(w4) / 255.0
+                # + wp.float32(w5) / 255.0,
             )
 
 
@@ -645,7 +780,6 @@ def spray_redistribution_kernel(
     transforms: wp.array(dtype=wp.transform),
     overlap_distance: wp.array(dtype=wp.float32),
     anisotropic_distance_weight: wp.array(dtype=wp.float32),
-    redistribution_rate: wp.array(dtype=wp.float32),
     k: wp.int32,
 ):
     i, widx = wp.tid()
@@ -661,15 +795,79 @@ def spray_redistribution_kernel(
             ij_overlap = relu((transfer_radius - dist) / transfer_radius)
             # move mass from partner; atomically, since every recipient thread updates
             # its donors and plain read-modify-writes would lose updates (creating mass)
-            diff = (
-                relu(mass[widx, j])
-                * (overlap[widx, j] - overlap[widx, i])
-                / overlap[widx, j]
-                * redistribution_rate[widx]
-                * ij_overlap
-            )
+            diff = relu(mass[widx, j]) * (overlap[widx, j] - overlap[widx, i]) / overlap[widx, j] * 0.3 * ij_overlap
             wp.atomic_add(mass, widx, j, -diff)
             wp.atomic_add(mass, widx, i, diff)
+
+
+@wp.func
+def diffusion_weight(
+    voxels: wp.array2d(dtype=wp.vec3i),
+    direction: wp.vec3f,
+    sigma: wp.float32,
+    parallel_weight: wp.float32,
+    widx: wp.int32,
+    i: wp.int32,
+    j: wp.int32,
+) -> wp.float32:
+    """Symmetric Gaussian kernel weight between the impact points of droplets i and j."""
+    dist = anisotropic_distance(wp.vec3f(voxels[widx, i]), wp.vec3f(voxels[widx, j]), direction, parallel_weight)
+    return wp.exp(-dist * dist / (2.0 * sigma * sigma))
+
+
+@wp.kernel
+def spray_density_kernel(
+    voxels: wp.array2d(dtype=wp.vec3i),
+    transforms: wp.array(dtype=wp.transform),
+    sigma: wp.array(dtype=wp.float32),
+    anisotropic_distance_weight: wp.array(dtype=wp.float32),
+    k: wp.int32,
+    densities: wp.array2d(dtype=wp.float32),
+):
+    """Local droplet density (kernel-weighted neighbour count, including self).
+
+    Geometry-only; used to normalize the mass diffusion so that the per-pass transfer
+    fraction is independent of how many droplets happen to share a neighbourhood
+    (i.e. of stand-off distance, droplet count and footprint size).
+    """
+    widx, i = wp.tid()
+    direction = wp.transform_vector(transforms[widx], wp.vec3f(1.0, 0.0, 0.0))
+    s = wp.float32(0.0)
+    for j in range(k):
+        s += diffusion_weight(voxels, direction, sigma[widx], anisotropic_distance_weight[widx], widx, i, j)
+    densities[widx, i] = s
+
+
+@wp.kernel
+def spray_diffusion_kernel(
+    voxels: wp.array2d(dtype=wp.vec3i),
+    mass_prev: wp.array2d(dtype=wp.float32),
+    densities: wp.array2d(dtype=wp.float32),
+    transforms: wp.array(dtype=wp.transform),
+    sigma: wp.array(dtype=wp.float32),
+    anisotropic_distance_weight: wp.array(dtype=wp.float32),
+    redistribution_rate: wp.array(dtype=wp.float32),
+    k: wp.int32,
+    mass: wp.array2d(dtype=wp.float32),
+):
+    """One gather-formulated mass-diffusion pass over the droplets of a spray event.
+
+    The pairwise flux ``rate * w_ij * (m_j - m_i) / max(S_i, S_j)`` is exactly
+    antisymmetric and both threads of a pair evaluate it from the same double-buffered
+    inputs, so the total mass is conserved by construction -- no scatter writes, no
+    atomics, no donor overdraw. The density normalization bounds every droplet's
+    per-pass change by ``rate`` times its local mass contrast, so masses stay
+    non-negative and stable for ``rate <= 1``.
+    """
+    widx, i = wp.tid()
+    direction = wp.transform_vector(transforms[widx], wp.vec3f(1.0, 0.0, 0.0))
+    m_i = mass_prev[widx, i]
+    s_i = densities[widx, i]
+    net = wp.float32(0.0)
+    for j in range(k):
+        w = diffusion_weight(voxels, direction, sigma[widx], anisotropic_distance_weight[widx], widx, i, j)
+        net += w * wp.pow(mass_prev[widx, j] - m_i, 3.0) / wp.max(s_i, densities[widx, j])
+    mass[widx, i] = m_i + redistribution_rate[widx] * net
 
 
 @wp.kernel
@@ -722,6 +920,54 @@ def spray_neighbours_kernel(
     wp.atomic_add(density, widx, i, spray_neighbours[widx, i, j])
 
 
+@wp.func
+def deposit_droplet(
+    wet: wp.array4d(dtype=wp.uint8),
+    dry: wp.array4d(dtype=wp.uint8),
+    ball_indices: wp.array(dtype=wp.vec3i),
+    voxels: wp.array2d(dtype=wp.vec3i),
+    remaining_mass: wp.array2d(dtype=wp.float32),
+    spray_neighbours: wp.array3d(dtype=wp.float32),
+    density: wp.array2d(dtype=wp.float32),
+    seed: wp.array(dtype=wp.int32),
+    widx: wp.int32,
+    i: wp.int32,
+):
+    m = remaining_mass[widx, i]
+    if m <= 0.0:
+        return
+
+    rem = m
+    density_ = density[widx, i]
+    if density_ <= 0.0:
+        return
+
+    for j in range(ball_indices.shape[0]):
+        pos = voxels[widx, i] + ball_indices[j]
+        if not valid_pos(pos, wet.shape):
+            continue
+        w = wet[widx, pos[0], pos[1], pos[2]]
+        d = dry[widx, pos[0], pos[1], pos[2]]
+        if total_density_is_smaller(w, d, DENSITY_MAX):
+            w_f32 = wp.float32(w) / DENSITY_MAX_F32
+            d_f32 = wp.float32(d) / DENSITY_MAX_F32
+            # one stream per (world, ray, voxel) so the rounding errors average out
+            # across the rays instead of being coherent within a step
+            state = wp.rand_init(seed[0], (widx * remaining_mass.shape[1] + i) * ball_indices.shape[0] + j)
+            diff = (
+                wp.min(
+                    wp.min(m * spray_neighbours[widx, i, j] / density_, relu(1.0 - w_f32 - d_f32)),
+                    relu(rem),
+                )
+                * DENSITY_MAX_F32
+            ) * 0.75
+            diff = wp.where((diff - wp.floor(diff)) > wp.randf(state), wp.ceil(diff), wp.floor(diff))
+            if wp.uint8(diff) != DENSITY_ZERO:
+                wet[widx, pos[0], pos[1], pos[2]] = saturating_add(wp.uint8(diff), wet[widx, pos[0], pos[1], pos[2]])
+                rem -= diff / DENSITY_MAX_F32
+    remaining_mass[widx, i] = rem
+
+
 @wp.kernel
 def spray_distribution_kernel(
     wet: wp.array4d(dtype=wp.uint8),
@@ -731,36 +977,34 @@ def spray_distribution_kernel(
     remaining_mass: wp.array2d(dtype=wp.float32),
     spray_neighbours: wp.array3d(dtype=wp.float32),
     density: wp.array2d(dtype=wp.float32),
+    seed: wp.array(dtype=wp.int32),
 ):
     i, widx = wp.tid()
+    deposit_droplet(wet, dry, ball_indices, voxels, remaining_mass, spray_neighbours, density, seed, widx, i)
 
-    m = relu(remaining_mass[widx, i])
-    if m <= 0.0:
-        return
 
-    rem = m
-    density_ = density[widx, i]
-    if density_ <= 0.0:
-        return
+@wp.kernel
+def spray_distribution_env_first_kernel(
+    wet: wp.array4d(dtype=wp.uint8),
+    dry: wp.array4d(dtype=wp.uint8),
+    ball_indices: wp.array(dtype=wp.vec3i),
+    voxels: wp.array2d(dtype=wp.vec3i),
+    remaining_mass: wp.array2d(dtype=wp.float32),
+    spray_neighbours: wp.array3d(dtype=wp.float32),
+    density: wp.array2d(dtype=wp.float32),
+    seed: wp.array(dtype=wp.int32),
+):
+    """:func:`spray_distribution_kernel` with swapped launch dimensions (environment
+    index first), so droplet threads are grouped by environment. Used to measure the
+    effect of the thread-launch order on the deposition's race behaviour."""
+    widx, i = wp.tid()
+    deposit_droplet(wet, dry, ball_indices, voxels, remaining_mass, spray_neighbours, density, seed, widx, i)
 
-    carry = wp.float32(0.0)
-    for j in range(ball_indices.shape[0]):
-        pos = voxels[widx, i] + ball_indices[j]
-        if not valid_pos(pos, wet.shape):
-            continue
-        w = wet[widx, pos[0], pos[1], pos[2]]
-        d = dry[widx, pos[0], pos[1], pos[2]]
-        if total_density_is_smaller(w, d, DENSITY_MAX):
-            capacity = relu(wp.float32(wp.int32(DENSITY_MAX) - wp.int32(w) - wp.int32(d)))
-            share = m * spray_neighbours[widx, i, j] / density_ * DENSITY_MAX_F32
-            diff = wp.min(wp.min(share, relu(rem) * DENSITY_MAX_F32), capacity)
-            total = diff + carry
-            q = wp.min(wp.floor(total), capacity)
-            carry = total - q
-            if q > 0.0:
-                wet[widx, pos[0], pos[1], pos[2]] = saturating_add(wp.uint8(q), wet[widx, pos[0], pos[1], pos[2]])
-                rem -= q / DENSITY_MAX_F32
-    remaining_mass[widx, i] = rem
+
+@wp.kernel
+def sum_mass_kernel(mass: wp.array2d(dtype=wp.float32), out_sum: wp.array(dtype=wp.float32)):
+    widx, i = wp.tid()
+    wp.atomic_add(out_sum, widx, mass[widx, i])
 
 
 @wp.kernel

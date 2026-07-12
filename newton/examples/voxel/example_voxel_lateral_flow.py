@@ -48,10 +48,10 @@ plausible perturbations of the nozzle pose (integer position jitter and ~0.3 deg
 aim error), mirroring the repeatability of a hand- or robot-held nozzle.
 
 The whole (run-averaged and single-run) final height maps, the profile tables, and
-the metrics are printed to stdout. Two figures are also written next to the current
-working directory: ``voxel_lateral_flow_profiles.png`` (radial profile overlay) and
-``voxel_lateral_flow_flux3d.png`` (3D surfaces of the simulated incident and
-placement flux densities over the wall plane).
+the metrics are printed to stdout. Two print-ready figures are also written to the
+current working directory: ``voxel_lateral_flow_profiles.pdf`` (radial profile
+overlay) and ``voxel_lateral_flow_flux3d.pdf`` (3D surfaces of the simulated
+incident and placement flux densities over the wall plane).
 
 ``--num-frames`` is the total number of spray events and is split evenly between the
 incident and the placement pass. Run with::
@@ -66,6 +66,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.voxel import _plot_style
 
 # grid layout: padded voxel-array dimensions (world axes: x lateral, y towards wall, z up)
 GRID_X = 186
@@ -85,10 +86,10 @@ DROPLET_COUNT = 300  # solver parameter `k`
 # which the reference panels (sprayed for a few seconds with accelerator) do not show.
 DROPLET_MASS = 1.0 / 12.0  # solver parameter `droplet_mass` (voxel-mass units)
 NOZZLE_OPENING_ANGLE = float(np.arctan(0.3))  # rad, half-angle of the spray cone
-# redistribution parameters (sweep optimum, see --sweep): the solver takes the
-# crowding radius in VOXELS, so define it in meters here and convert
-OVERLAP_DISTANCE = 0.08  # m; mass-transfer radius is 0.9x of this
-REDISTRIBUTION_RATE = 0.3
+# redistribution (lateral-flow diffusion) parameters, see --sweep: the solver takes
+# the Gaussian smoothing length sigma in VOXELS, so define it in meters and convert
+OVERLAP_DISTANCE = 0.04  # m; kernel width sigma of the droplet-mass diffusion
+REDISTRIBUTION_RATE = 1.0  # per-pass diffusion rate, stable for <= 1
 
 # radial binning of the profiles; the innermost ring of the solver's Fibonacci spray
 # spiral lands at r ~ 12 mm, so bins must be wider than that to sample the center evenly
@@ -96,10 +97,9 @@ PROFILE_BIN_WIDTH = 0.020  # m
 PROFILE_MAX_RADIUS = 0.400  # m
 
 # --sweep: per-world grid over the redistribution parameters; world w uses
-# OD_SWEEP[(w // len(RATE_SWEEP)) % len(OD_SWEEP)] and RATE_SWEEP[w % len(RATE_SWEEP)],
-# so 64 worlds cover the full 8x8 grid in one run. The crowding radius is in voxels
-# (the mass-transfer radius is 0.9x of it); the physical scale to bracket is the
-# incident half-width (~130 mm = 26 voxels).
+# OD_SWEEP[(w // len(RATE_SWEEP)) % len(OD_SWEEP)] and RATE_SWEEP[w % len(RATE_SWEEP)].
+# OD_SWEEP is the diffusion kernel width sigma in voxels; the physical scale to
+# bracket is the lateral-flow length (~50-150 mm).
 OD_SWEEP = np.array([8.0, 12.0, 14.0, 16.0, 24.0, 32.0, 40.0, 52.0, 68.0, 84.0, 100.0])  # voxels
 RATE_SWEEP = np.array([0.05, 0.1, 0.15, 0.2, 0.3, 0.45, 0.6, 0.8])
 # fit targets derived from the reference fits (1.0 m stand-off, rebound factored out)
@@ -129,13 +129,10 @@ GINOUSE_JOLIN_PLACEMENT_REF = np.array(
 )
 GINOUSE_JOLIN_CROSSOVER_RADIUS = 0.18  # m, placement flux exceeds incident flux beyond this
 
-# figure styling: incident in blue, placement in aqua; simulation solid, reference dashed
-PLOT_SURFACE = "#fcfcfb"
-PLOT_TEXT = "#0b0b0b"
-PLOT_TEXT_SECONDARY = "#52514e"
-PLOT_GRID = "#e5e4e0"
-PLOT_INCIDENT = "#2a78d6"
-PLOT_PLACEMENT = "#1baf7a"
+# figure styling (shared print style): incident in blue, placement in aqua;
+# simulation solid, reference dashed; sequential ramps for the 3D flux surfaces
+PLOT_INCIDENT = _plot_style.SERIES[0]
+PLOT_PLACEMENT = _plot_style.SERIES[1]
 PLOT_INCIDENT_RAMP = ["#cde2fb", "#86b6ef", "#3987e5", "#1c5cab", "#0d366b"]
 PLOT_PLACEMENT_RAMP = ["#d8f3e8", "#7fd8b6", "#1baf7a", "#0f7d57", "#084a34"]
 
@@ -284,7 +281,6 @@ class Example:
             droplet_mass=DROPLET_MASS,
             nozzle_opening_angle=NOZZLE_OPENING_ANGLE,
             overlap_distance=OVERLAP_DISTANCE / VOXEL_SIZE,
-            redistribution_rate=REDISTRIBUTION_RATE,
             # the first pass measures the incident flux: without the in-flight mass
             # shaping every droplet deposits its generated mass at its impact site
             redistribution=False,
@@ -360,7 +356,7 @@ class Example:
         incident_map_mean: np.ndarray,
         placement_map_mean: np.ndarray,
     ):
-        """Write the profile-overlay and 3D flux-density figures as PNG files."""
+        """Write the profile-overlay and 3D flux-density figures as PDF files."""
         try:
             import matplotlib  # noqa: PLC0415
 
@@ -371,25 +367,20 @@ class Example:
             print("matplotlib not available, skipping the figures")
             return
 
+        _plot_style.setup(plt)
+
         # --- radial profile overlay ---
-        fig, ax = plt.subplots(figsize=(6.4, 4.2), dpi=150)
-        fig.patch.set_facecolor(PLOT_SURFACE)
-        ax.set_facecolor(PLOT_SURFACE)
+        fig, ax = plt.subplots(figsize=(4.6, 3.2))
         r_mm = centers * 1000.0
-        ax.plot(r_mm, incident_norm, color=PLOT_INCIDENT, lw=2.0, label="incident (sim)")
-        ax.plot(r_mm, incident_ref, color=PLOT_INCIDENT, lw=1.6, ls="--", label="incident (Ginouse & Jolin)")
-        ax.plot(r_mm, placement_norm, color=PLOT_PLACEMENT, lw=2.0, label="placement (sim)")
-        ax.plot(r_mm, placement_ref, color=PLOT_PLACEMENT, lw=1.6, ls="--", label="placement (Ginouse & Jolin)")
-        ax.set_xlabel("radius from spray axis (mm)", color=PLOT_TEXT_SECONDARY)
-        ax.set_ylabel("normalized mass flux q / q_max", color=PLOT_TEXT_SECONDARY)
-        ax.set_title("Lateral flow: incident vs. placement flux, 1.0 m stand-off", color=PLOT_TEXT)
-        ax.grid(color=PLOT_GRID, lw=0.6)
-        ax.tick_params(colors=PLOT_TEXT_SECONDARY)
-        for spine in ax.spines.values():
-            spine.set_color(PLOT_GRID)
-        ax.legend(frameon=False, labelcolor=PLOT_TEXT)
-        fig.tight_layout()
-        fig.savefig("voxel_lateral_flow_profiles.png", facecolor=fig.get_facecolor())
+        ax.plot(r_mm, incident_norm, color=PLOT_INCIDENT, label="incident (sim)")
+        ax.plot(r_mm, incident_ref, color=PLOT_INCIDENT, lw=1.1, ls="--", label="incident (Ginouse & Jolin)")
+        ax.plot(r_mm, placement_norm, color=PLOT_PLACEMENT, label="placement (sim)")
+        ax.plot(r_mm, placement_ref, color=PLOT_PLACEMENT, lw=1.1, ls="--", label="placement (Ginouse & Jolin)")
+        ax.set_xlabel("radius from spray axis (mm)")
+        ax.set_ylabel("normalized mass flux $q / q_{\\mathrm{max}}$")
+        ax.set_title("Lateral flow: incident vs. placement flux, 1.0 m stand-off")
+        ax.legend()
+        fig.savefig("voxel_lateral_flow_profiles.pdf")
         plt.close(fig)
 
         # --- 3D flux-density surfaces over the wall plane ---
@@ -405,15 +396,14 @@ class Example:
         cx, cz = GRID_X // 2, GRID_Z // 2
         sl_x = slice(max(cx - half, 0), min(cx + half + 1, GRID_X))
         sl_z = slice(max(cz - half, 0), min(cz + half + 1, GRID_Z))
-        incident_crop = box_smooth(incident_map_mean)[sl_x, sl_z]
-        placement_crop = box_smooth(placement_map_mean)[sl_x, sl_z]
+        incident_crop = box_smooth(incident_map_mean, radius=2)[sl_x, sl_z]
+        placement_crop = box_smooth(placement_map_mean, radius=2)[sl_x, sl_z]
         peak = incident_crop.max()
         x_mm = (np.arange(sl_x.start, sl_x.stop) - cx) * VOXEL_SIZE * 1000.0
         z_mm = (np.arange(sl_z.start, sl_z.stop) - cz) * VOXEL_SIZE * 1000.0
         xx, zz = np.meshgrid(x_mm, z_mm, indexing="ij")
 
-        fig = plt.figure(figsize=(10.0, 4.4), dpi=150)
-        fig.patch.set_facecolor(PLOT_SURFACE)
+        fig = plt.figure(figsize=(7.4, 3.3))
         panels = [
             (incident_crop, "incident", PLOT_INCIDENT_RAMP),
             (placement_crop, "placement", PLOT_PLACEMENT_RAMP),
@@ -421,18 +411,16 @@ class Example:
         for idx, (data, name, ramp) in enumerate(panels):
             cmap = LinearSegmentedColormap.from_list(f"seq_{name}", ramp)
             ax = fig.add_subplot(1, 2, idx + 1, projection="3d")
-            ax.set_facecolor(PLOT_SURFACE)
             ax.plot_surface(xx, zz, data / peak, cmap=cmap, vmin=0.0, vmax=1.0, rcount=80, ccount=80, antialiased=True)
             ax.set_zlim(0.0, 1.0)
-            ax.set_xlabel("x (mm)", color=PLOT_TEXT_SECONDARY)
-            ax.set_ylabel("z (mm)", color=PLOT_TEXT_SECONDARY)
-            ax.set_zlabel("flux / incident peak", color=PLOT_TEXT_SECONDARY)
-            ax.set_title(f"{name} mass flux density (sim)", color=PLOT_TEXT)
-            ax.tick_params(colors=PLOT_TEXT_SECONDARY)
+            ax.set_xlabel("$x$ (mm)")
+            ax.set_ylabel("$z$ (mm)")
+            ax.set_zlabel("flux / incident peak")
+            ax.set_title(f"{name} mass flux density (sim)")
         fig.tight_layout()
-        fig.savefig("voxel_lateral_flow_flux3d.png", facecolor=fig.get_facecolor())
+        fig.savefig("voxel_lateral_flow_flux3d.pdf")
         plt.close(fig)
-        print("saved figures: voxel_lateral_flow_profiles.png, voxel_lateral_flow_flux3d.png")
+        print("saved figures: voxel_lateral_flow_profiles.pdf, voxel_lateral_flow_flux3d.pdf")
 
     def report(self):
         self.reported = True
@@ -517,53 +505,53 @@ class Example:
             align_mean(placement_map),
         )
 
-        print("\n=== Lateral flow vs. Ginouse & Jolin (2016) ===")
-        print(
-            f"worlds: {self.num_worlds}, spray events per pass: {self.steps_per_phase}, "
-            f"nozzle distance: {(self.wall_j - self.nozzle_grid_pos[0, 1]) * VOXEL_SIZE:.3f} m, "
-            f"voxel size: {VOXEL_SIZE * 1000:.1f} mm"
-        )
-        print(
-            "protocol: pass 1 with redistribution+respreading disabled (incident flux), "
-            "pass 2 with the full model (placement flux)"
-        )
+        # print("\n=== Lateral flow vs. Ginouse & Jolin (2016) ===")
+        # print(
+        #     f"worlds: {self.num_worlds}, spray events per pass: {self.steps_per_phase}, "
+        #     f"nozzle distance: {(self.wall_j - self.nozzle_grid_pos[0, 1]) * VOXEL_SIZE:.3f} m, "
+        #     f"voxel size: {VOXEL_SIZE * 1000:.1f} mm"
+        # )
+        # print(
+        #     "protocol: pass 1 with redistribution+respreading disabled (incident flux), "
+        #     "pass 2 with the full model (placement flux)"
+        # )
 
-        print("\n--- Radial profiles (normalized flux, ensemble mean over runs) ---")
-        print(f"{'r_mm':>6} {'incident_sim':>13} {'incident_ref':>13} {'placement_sim':>14} {'placement_ref':>14}")
-        for i, r in enumerate(centers):
-            print(
-                f"{r * 1000:6.1f} {incident_norm[i]:13.4f} {incident_ref[i]:13.4f} "
-                f"{placement_norm[i]:14.4f} {placement_ref[i]:14.4f}"
-            )
+        # print("\n--- Radial profiles (normalized flux, ensemble mean over runs) ---")
+        # print(f"{'r_mm':>6} {'incident_sim':>13} {'incident_ref':>13} {'placement_sim':>14} {'placement_ref':>14}")
+        # for i, r in enumerate(centers):
+        #     print(
+        #         f"{r * 1000:6.1f} {incident_norm[i]:13.4f} {incident_ref[i]:13.4f} "
+        #         f"{placement_norm[i]:14.4f} {placement_ref[i]:14.4f}"
+        #     )
 
-        print("\n--- Fidelity metrics ---")
-        print(f"profile RMSE, incident  vs. reference: {rmse_incident:.4f}")
-        print(f"profile RMSE, placement vs. reference: {rmse_placement:.4f}")
-        print(
-            f"half-width incident: {hw_incident * 1000:.1f} mm (reference {hw_ref_incident * 1000:.1f} mm), "
-            f"placement: {hw_placement * 1000:.1f} mm (reference {hw_ref_placement * 1000:.1f} mm)"
-        )
-        print(
-            f"placement/incident width ratio: {self.metrics['width_ratio']:.3f} "
-            f"(reference {self.metrics['width_ratio_ref']:.3f})"
-        )
-        print(
-            f"placement/incident crossover radius: {crossover * 1000:.1f} mm "
-            f"(reference ~{GINOUSE_JOLIN_CROSSOVER_RADIUS * 1000:.0f} mm)"
-        )
-        print(f"mean placement/incident deposited mass ratio: {self.metrics['deposited_fraction']:.3f}")
-        print(f"mean adhesion-failure/incident mass fraction: {self.metrics['adhesion_lost_fraction']:.4f}")
-        print(f"peak of run-averaged height map: {self.metrics['center_thickness_mm']:.1f} mm")
+        # print("\n--- Fidelity metrics ---")
+        # print(f"profile RMSE, incident  vs. reference: {rmse_incident:.4f}")
+        # print(f"profile RMSE, placement vs. reference: {rmse_placement:.4f}")
+        # print(
+        #     f"half-width incident: {hw_incident * 1000:.1f} mm (reference {hw_ref_incident * 1000:.1f} mm), "
+        #     f"placement: {hw_placement * 1000:.1f} mm (reference {hw_ref_placement * 1000:.1f} mm)"
+        # )
+        # print(
+        #     f"placement/incident width ratio: {self.metrics['width_ratio']:.3f} "
+        #     f"(reference {self.metrics['width_ratio_ref']:.3f})"
+        # )
+        # print(
+        #     f"placement/incident crossover radius: {crossover * 1000:.1f} mm "
+        #     f"(reference ~{GINOUSE_JOLIN_CROSSOVER_RADIUS * 1000:.0f} mm)"
+        # )
+        # print(f"mean placement/incident deposited mass ratio: {self.metrics['deposited_fraction']:.3f}")
+        # print(f"mean adhesion-failure/incident mass fraction: {self.metrics['adhesion_lost_fraction']:.4f}")
+        # print(f"peak of run-averaged height map: {self.metrics['center_thickness_mm']:.1f} mm")
 
-        print("\n--- Height map (placement pass), ensemble mean over runs, mm (rows: x, cols: z) ---")
-        print(np.array2string(mean_height_mm, precision=1, suppress_small=True))
-        if self.print_all_heightmaps:
-            for w in range(self.num_worlds):
-                print(f"\n--- Height map, run {w}, mm ---")
-                print(np.array2string(heights[w] * 1000.0, precision=1, suppress_small=True))
-        else:
-            print("\n--- Height map, run 0, mm (use --print-all-heightmaps for every run) ---")
-            print(np.array2string(heights[0] * 1000.0, precision=1, suppress_small=True))
+        # print("\n--- Height map (placement pass), ensemble mean over runs, mm (rows: x, cols: z) ---")
+        # print(np.array2string(mean_height_mm, precision=1, suppress_small=True))
+        # if self.print_all_heightmaps:
+        #     for w in range(self.num_worlds):
+        #         print(f"\n--- Height map, run {w}, mm ---")
+        #         print(np.array2string(heights[w] * 1000.0, precision=1, suppress_small=True))
+        # else:
+        #     print("\n--- Height map, run 0, mm (use --print-all-heightmaps for every run) ---")
+        #     print(np.array2string(heights[0] * 1000.0, precision=1, suppress_small=True))
 
     def report_sweep(
         self,
@@ -599,7 +587,7 @@ class Example:
         print("\n=== Redistribution parameter sweep vs. Ginouse & Jolin (2016) ===")
         print(
             f"worlds: {self.num_worlds}, spray events per pass: {self.steps_per_phase}, "
-            f"voxel size: {VOXEL_SIZE * 1000:.1f} mm; transfer radius = 0.9 * crowding radius"
+            f"voxel size: {VOXEL_SIZE * 1000:.1f} mm; sigma = diffusion kernel width"
         )
         print(
             f"targets: width ratio {TARGET_WIDTH_RATIO:.2f}, crossover {TARGET_CROSSOVER * 1000:.0f} mm, "
