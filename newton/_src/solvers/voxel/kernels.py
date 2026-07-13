@@ -661,7 +661,13 @@ def respreading_kernel(
             w1 = wet[widx, pos[0], pos[1], pos[2]]
             d1 = dry[widx, pos[0], pos[1], pos[2]]
             if not is_wall(w1, d1):
-                wet[widx, pos[0], pos[1], pos[2]] = wp.uint8(wp.float32(w1) * sigma[widx])
+                # keep the fraction sigma of the wet mass in the voxel and credit the
+                # droplet with exactly the removed integer amount, so the erosion
+                # conserves mass for any sigma (crediting w1 * sigma while removing
+                # w1 * (1 - sigma) creates mass whenever sigma > 0.5)
+                kept = wp.uint8(wp.float32(w1) * sigma[widx])
+                wet[widx, pos[0], pos[1], pos[2]] = kept
+                w1 = w1 - kept
             else:
                 w1 = wp.uint8(0)
             # w2 = wet[widx, pos[0] + 1, pos[1], pos[2]]
@@ -692,7 +698,7 @@ def respreading_kernel(
                 droplet_mass,
                 widx,
                 i,
-                wp.float32(w1) * sigma[widx] / 255.0,
+                wp.float32(w1) / 255.0,
                 # + wp.float32(w2) / 255.0
                 # + wp.float32(w3) / 255.0
                 # + wp.float32(w4) / 255.0
@@ -1025,7 +1031,7 @@ def deposit_droplet(
                     relu(rem),
                 )
                 * DENSITY_MAX_F32
-            ) * 0.75
+            )
             diff = wp.where((diff - wp.floor(diff)) > wp.randf(state), wp.ceil(diff), wp.floor(diff))
             if wp.uint8(diff) != DENSITY_ZERO:
                 wet[widx, pos[0], pos[1], pos[2]] = saturating_add(wp.uint8(diff), wet[widx, pos[0], pos[1], pos[2]])
