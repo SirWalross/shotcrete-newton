@@ -124,8 +124,7 @@ class SolverVoxel(SolverBase):
         wet_strength_penalty: float = 0.6,
         failure_damage: float = 0.0,
         failure_damage_decay: float = 100.0,
-        failure_trigger: float = 10.0,
-        failure_cooldown: int = 10,
+        failure_trigger: float = 20.0,
         max_failure_sites: int = 1024,
         debug_mode: bool = False,
         adhesion_check_freq: int = 10,
@@ -221,9 +220,6 @@ class SolverVoxel(SolverBase):
             # adhesion checks after a full-peak crater during which the cut stays
             # suppressed, so a collapse's aftershock tranches shed as plain drop-downs
             # instead of cascading full craters across the deposit
-            self.failure_cooldown = failure_cooldown
-            self.failure_cooldown_state = wp.zeros((self.shape[0],), dtype=wp.int32)
-            self.failure_fire_scale = wp.zeros((self.shape[0],), dtype=wp.float32)
         # Per-world lidar occlusion radius (m); 0 disables occlusion (occluded view == clean view).
         self.occlusion_distance = wp.full((self.shape[0],), occlusion_distance, dtype=wp.float32)
 
@@ -409,8 +405,6 @@ class SolverVoxel(SolverBase):
             self.model.voxel_dry[world_indices].fill_(DENSITY_ZERO)
             self.model.voxel_distance[world_indices].fill_(DISTANCE_MAX)
             self.model.voxel_load[world_indices].fill_(LOAD_ZERO)
-            if self.apply_failure_damage:
-                self.failure_cooldown_state[world_indices].zero_()
 
             # set floor
             self.model.voxel_wet[world_indices, :, :, :1].fill_(DENSITY_MAX)
@@ -837,16 +831,6 @@ class SolverVoxel(SolverBase):
                     outputs=[self.failed_count, self.failed_positions],
                 )
                 wp.launch(
-                    failure_cooldown_kernel,
-                    dim=(self.shape[0],),
-                    inputs=[
-                        self.failed_count,
-                        self.failure_trigger,
-                        self.failure_cooldown,
-                    ],
-                    outputs=[self.failure_cooldown_state, self.failure_fire_scale],
-                )
-                wp.launch(
                     failure_ball_damage_kernel,
                     dim=(self.failure_ball_indices.shape[0], self.failed_positions.shape[1], self.shape[0]),
                     inputs=[
@@ -854,7 +838,6 @@ class SolverVoxel(SolverBase):
                         self.model.voxel_dry,
                         self.failed_count,
                         self.failed_positions,
-                        self.failure_fire_scale,
                         self.failure_damage,
                         self.failure_damage_decay,
                         self.failure_ball_indices,
@@ -1022,26 +1005,26 @@ class SolverVoxel(SolverBase):
             )
             if self.redistribution:
                 self.avg_ray_index.zero_()
-                wp.launch(kernel=sum_kernel, dim=(self.shape[0], self.k), inputs=[self.ray_indices, self.avg_ray_index])
-                wp.launch(
-                    respreading_kernel,
-                    dim=(self.respreading_backtracking_amount, self.k, self.shape[0]),
-                    inputs=[
-                        self.model.voxel_wet,
-                        self.model.voxel_dry,
-                        self.sigma,
-                        self.ray_indices,
-                        self.positions,
-                        self.directions,
-                        self.speed_distribution,
-                        LINEAR_SPACING,
-                        self.avg_ray_index,
-                        self.droplet_mass,
-                        self.h,
-                        self.k,
-                    ],
-                    outputs=[],
-                )
+                # wp.launch(kernel=sum_kernel, dim=(self.shape[0], self.k), inputs=[self.ray_indices, self.avg_ray_index])
+                # wp.launch(
+                #     respreading_kernel,
+                #     dim=(self.respreading_backtracking_amount, self.k, self.shape[0]),
+                #     inputs=[
+                #         self.model.voxel_wet,
+                #         self.model.voxel_dry,
+                #         self.sigma,
+                #         self.ray_indices,
+                #         self.positions,
+                #         self.directions,
+                #         self.speed_distribution,
+                #         LINEAR_SPACING,
+                #         self.avg_ray_index,
+                #         self.droplet_mass,
+                #         self.h,
+                #         self.k,
+                #     ],
+                #     outputs=[],
+                # )
             wp.launch(
                 spray_backtrack_kernel,
                 dim=(self.shape[0], self.k, self.backtrack_count),
@@ -1151,7 +1134,7 @@ class SolverVoxel(SolverBase):
                     print=self.print_timings,
                     dict=self.timing_dict,
                 ):
-                    for _ in range(5):
+                    for _ in range(10):
                         wp.copy(self.diffusion_mass_prev, self.droplet_mass)
                         wp.launch(
                             spray_diffusion_kernel,

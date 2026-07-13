@@ -15,12 +15,21 @@
 
 """Qualitative visualization of cohesive failure (drop-down) in the voxel solver.
 
-A stationary nozzle sprays perpendicularly at a fixed spot on a vertical wall with an
-embedded rebar mesh. At the default delivery rate the wet material accumulates faster
-than it solidifies, the deposit's weight eventually exceeds the load capacity
-propagated through its adhesion/shear/compression network, and the solver's
-``drop_down_kernel`` deletes the overloaded voxels and drops them to the floor -- the
-cohesive-failure ("drop down") event this example captures.
+A stationary nozzle sprays perpendicularly at a fixed spot on a vertical wall. At the
+default delivery rate the wet material accumulates faster than it solidifies, the
+deposit's weight eventually exceeds the load capacity propagated through its
+adhesion/shear/compression network, and the solver's ``drop_down_kernel`` deletes the
+overloaded voxels and drops them to the floor -- the cohesive-failure ("drop down")
+event this example captures. With ``--rebar`` a rebar mesh sits ``--rebar-cover``
+meters (default 0.10) in front of the wall; the growing deposit engulfs the bars,
+which anchor the load and distance fields, and the mesh carries the deposit well past
+the bare wall's support envelope -- the first drop-down happens markedly later (about
+step 590 instead of 430 at the default settings) and less material is lost. The cover
+must stay inside the bare deposit's critical protrusion (~0.125 m here): a mesh
+further out is never reached by the deposit and cannot support anything. With
+``--overhead`` the nozzle instead sprays straight up at a ceiling: the deposit hangs
+by adhesion alone (no shear path to a vertical anchor), so the drop-down happens at
+much thinner layers and much sooner than on the wall.
 
 The failure is then widened into a crater seeded at the break surface: failed voxels
 that snapped off still-standing material cast a radially decaying damage ball (peak
@@ -90,12 +99,16 @@ DROPLET_COUNT = 300  # solver parameter `k`
 DROPLET_MASS = 1.0 / 12.0
 NOZZLE_DISTANCE = 0.5  # m, perpendicular nozzle-to-wall distance
 
-# rebar mesh in front of the wall: 15 mm bars at 150 mm spacing with 30 mm cover
-REBAR_COVER = 6  # voxels between wall face and bar axis
+# optional rebar mesh in front of the wall (--rebar): 15 mm bars at 75 mm pitch. The
+# cover must stay inside the bare deposit's critical protrusion (~0.125 m here, the
+# ~20-voxel support-chain envelope): only then does the growing deposit engulf the
+# mesh, get re-anchored by it and demonstrably drop down later; a mesh further out is
+# never reached and cannot carry anything
+REBAR_COVER = 0.10  # m, wall face to bar axis
 REBAR_THICKNESS = 3  # voxels
-REBAR_SPACING = 30  # voxels
-REBAR_COUNT = (4, 4)  # (vertical bars, horizontal bars)
-REBAR_OFFSET = 20  # first bar position (voxels), centers the 4x4 mesh on the grid
+REBAR_SPACING = 15  # voxels
+REBAR_COUNT = (8, 8)  # (vertical bars, horizontal bars)
+REBAR_OFFSET = 20  # first bar position (voxels), centers the 8x8 mesh on the spray spot
 
 # material densities, mirroring the solver's encoding (values are wet==dry for the
 # static materials): occupancy threshold, rebar marker
@@ -132,11 +145,11 @@ def grid_to_world(gx: float, gy: float, gz: float) -> wp.vec3:
 
 @wp.func
 def occupied(wet: wp.array4d(dtype=wp.uint8), dry: wp.array4d(dtype=wp.uint8), i: int, j: int, k: int) -> bool:
-    # outside the grid, the wall slab, and the floor plane count as occupied so the
-    # faces shared with them stay hidden (wall and floor are drawn as static slabs)
+    # outside the grid and the static slabs (wall, floor, and -- in overhead mode --
+    # the ceiling) count as occupied so the faces shared with them stay hidden
     if i < 0 or i >= wet.shape[1] or j < 0 or k >= wet.shape[3]:
         return True
-    if j >= wet.shape[2] - 2 or k <= 0:
+    if j >= wet.shape[2] - 2 or k <= 0 or k >= wet.shape[3] - 2:
         return True
     return wp.int32(wet[0, i, j, k]) + wp.int32(dry[0, i, j, k]) >= DENSITY_HALF
 
@@ -153,6 +166,8 @@ def extract_surface_kernel(
 ):
     i, j, k = wp.tid()
     k = k + 1  # the floor plane at k = 0 is rendered as a static slab
+    if k >= wet.shape[3] - 2:
+        return  # the ceiling slab (overhead mode) is rendered statically too
     w = wp.int32(wet[0, i, j, k])
     d = wp.int32(dry[0, i, j, k])
     if w + d < DENSITY_HALF:
@@ -193,10 +208,13 @@ class Example:
         strength_scale=1.0,
         droplet_mass_scale=1.0,
         failure_damage=1000.0,
-        failure_decay=50.0,
-        failure_trigger=10.0,
+        failure_decay=10.0,
+        failure_trigger=20.0,
         failure_cooldown=10,
         nozzle_distance=NOZZLE_DISTANCE,
+        rebar=False,
+        rebar_cover=REBAR_COVER,
+        overhead=False,
         output_dir="voxel_drop_down_frames",
     ):
         self.fps = 50
@@ -213,9 +231,22 @@ class Example:
 
         np.random.seed(2025)  # noqa: NPY002 -- the solver draws its speed distributions from legacy np.random
 
+        assert not (rebar and overhead), "the rebar mesh is only generated in front of the vertical wall"
+        self.overhead = overhead
         wall_j = GRID_Y - 2
-        base_gy = wall_j - round(nozzle_distance / VOXEL_SIZE)
-        assert base_gy >= 2, "grid too shallow for the requested nozzle distance"
+        ceiling_k = GRID_Z - 2
+        if overhead:
+            # nozzle below the ceiling center, spraying straight up: the deposit hangs
+            # by adhesion alone, so it drops down at much thinner layers than the wall
+            base_gz = ceiling_k - round(nozzle_distance / VOXEL_SIZE)
+            assert base_gz >= 2, "grid too low for the requested nozzle distance"
+            nozzle_grid = (GRID_X // 2, GRID_Y // 2, base_gz)
+            nozzle_dir = np.array([0.0, 0.0, 1.0])
+        else:
+            base_gy = wall_j - round(nozzle_distance / VOXEL_SIZE)
+            assert base_gy >= 2, "grid too shallow for the requested nozzle distance"
+            nozzle_grid = (GRID_X // 2, base_gy, GRID_Z // 2)
+            nozzle_dir = np.array([0.0, 1.0, 0.0])
 
         nozzle = newton.ModelBuilder()
         # the solver looks up the TCP body via the `/World/envs/env_*/<name>` USD-style key
@@ -223,9 +254,7 @@ class Example:
         nozzle.add_shape_sphere(body, radius=0.02)
 
         builder = newton.ModelBuilder()
-        xform = wp.transform(
-            grid_to_world(GRID_X // 2, base_gy, GRID_Z // 2), quat_from_x_to(np.array([0.0, 1.0, 0.0]))
-        )
+        xform = wp.transform(grid_to_world(*nozzle_grid), quat_from_x_to(nozzle_dir))
         builder.add_world(nozzle, xform=xform)
         self.model = builder.finalize()
 
@@ -248,27 +277,42 @@ class Example:
             h=VOXEL_SIZE,
             k=DROPLET_COUNT,
             droplet_mass=DROPLET_MASS * droplet_mass_scale,
-            shear_strength=2.0 * strength_scale,
-            adhesion_strength=0.8 * strength_scale,
-            compression_strength=40.0 * strength_scale,
+            shear_strength=3.0 * strength_scale,
+            adhesion_strength=1.4 * strength_scale,
+            compression_strength=80.0 * strength_scale,
             wet_strength_penalty=1.0,
             failure_damage=failure_damage,
             failure_damage_decay=failure_decay,
             failure_trigger=failure_trigger,
-            failure_cooldown=failure_cooldown,
-            generate_rebar=False,
+            generate_rebar=rebar,
+            # fully spray-transparent bars: with the default interception chance the
+            # thin mesh plates over within a few steps, catches the (closer, more
+            # concentrated) spray in front of the deposit and sheds from there EARLIER
+            # than the bare wall; transparent bars stay inert until the wall deposit
+            # engulfs them and only then anchor it from inside
+            alpha=0.0,
             use_bounding_boxes=False,
             sigma=0.5,
         )
+        # bar axis sits rebar_cover meters in front of the wall face; with --rebar the
+        # mesh anchors the deposit (rebar voxels carry LOAD_MAX at distance 0) so the
+        # drop-down happens much later and above the load the bare wall could hold
+        cover = round(rebar_cover / VOXEL_SIZE)
+        assert 2 <= cover <= wall_j - 4, "rebar cover outside the grid"
         rebar_settings = {
-            "rebar_offset_hor": wp.array([wp.vec3i(REBAR_OFFSET, wall_j - REBAR_COVER, 0)], dtype=wp.vec3i),
-            "rebar_offset_ver": wp.array([wp.vec3i(0, wall_j - REBAR_COVER, REBAR_OFFSET)], dtype=wp.vec3i),
+            "rebar_offset_hor": wp.array([wp.vec3i(REBAR_OFFSET, wall_j - cover, 0)], dtype=wp.vec3i),
+            "rebar_offset_ver": wp.array([wp.vec3i(0, wall_j - cover, REBAR_OFFSET)], dtype=wp.vec3i),
             "rebar_thickness": wp.array([REBAR_THICKNESS], dtype=wp.int32),
             "rebar_spacing": wp.array([wp.vec2i(REBAR_SPACING, REBAR_SPACING)], dtype=wp.vec2i),
             "rebar_count": REBAR_COUNT,
         }
         self.world_indices = wp.array([0], dtype=wp.int32, device=self.device)
         self.solver.reset(self.state_0, self.world_indices, rebar_settings=rebar_settings)
+        if overhead:
+            # anchored ceiling slab, mirroring the wall/floor slabs the solver resets
+            self.model.voxel_wet[:, :, :, ceiling_k:].fill_(255)
+            self.model.voxel_dry[:, :, :, ceiling_k:].fill_(255)
+            self.model.voxel_distance[:, :, :, ceiling_k:].fill_(0)
 
         # surface-voxel instancing buffers (compacted on the GPU each frame)
         self.max_instances = 300_000
@@ -295,6 +339,26 @@ class Example:
             ),
             wp.array([COLOR_FLOOR], dtype=wp.vec3),
         )
+        self.slabs = [("/wall", self.wall_slab), ("/floor", self.floor_slab)]
+        if overhead:
+            self.slabs.append(
+                (
+                    "/ceiling",
+                    (
+                        (half_x, GRID_Y / 2 * VOXEL_SIZE, VOXEL_SIZE),
+                        wp.array(
+                            [
+                                wp.transform(
+                                    wp.vec3(0.0, GRID_Y / 2 * VOXEL_SIZE, (GRID_Z - 1) * VOXEL_SIZE),
+                                    wp.quat_identity(),
+                                )
+                            ],
+                            dtype=wp.transform,
+                        ),
+                        wp.array([COLOR_WALL], dtype=wp.vec3),
+                    ),
+                )
+            )
 
         # ring-buffer capture state; entries are (step, image or None, field slices)
         self.pre_frames = collections.deque(maxlen=10)
@@ -314,11 +378,17 @@ class Example:
 
         self.viewer.set_model(self.model)
         # camera: off-axis view of the spray spot so the nozzle does not occlude it,
-        # framing both the deposit on the wall and the floor where failed material lands
-        wall_y = wall_j * VOXEL_SIZE
-        spot_z = GRID_Z // 2 * VOXEL_SIZE
-        target = np.array([0.0, wall_y, spot_z - 0.08])
-        pos = np.array([0.34, wall_y - 0.52, spot_z + 0.10])
+        # framing both the deposit and the floor where failed material lands
+        if overhead:
+            spot_y = GRID_Y // 2 * VOXEL_SIZE
+            ceiling_z = ceiling_k * VOXEL_SIZE
+            target = np.array([0.0, spot_y, ceiling_z - 0.16])
+            pos = np.array([0.40, spot_y - 0.45, ceiling_z - 0.52])
+        else:
+            wall_y = wall_j * VOXEL_SIZE
+            spot_z = GRID_Z // 2 * VOXEL_SIZE
+            target = np.array([0.0, wall_y, spot_z - 0.08])
+            pos = np.array([0.34, wall_y - 0.52, spot_z + 0.10])
         d = target - pos
         yaw = float(np.degrees(np.arctan2(d[1], d[0])))
         pitch = float(np.degrees(np.arcsin(d[2] / np.linalg.norm(d))))
@@ -350,7 +420,7 @@ class Example:
             return
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        for name, (scale, xform, color) in (("/wall", self.wall_slab), ("/floor", self.floor_slab)):
+        for name, (scale, xform, color) in self.slabs:
             self.viewer.log_shapes(name, newton.GeoType.BOX, scale, xform, color)
         self._log_surface_voxels()
         self.viewer.end_frame()
@@ -513,7 +583,7 @@ class Example:
         fig.suptitle(f"y-z slice at x = {self.slice_x}{' -- failure step' if tag else ''}")
         fig.tight_layout()
         path = os.path.join(self.output_dir, f"slice_{idx:02d}_step{step:04d}{tag}.png")
-        # plt.show()
+        plt.show()
         fig.savefig(path, dpi=200)
         self.saved_slice_paths.append(path)
 
@@ -586,7 +656,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--failure-trigger",
         type=float,
-        default=10.0,
+        default=20.0,
         help="Minimum break-surface size (snapped-off voxels) for the crater cut to fire; smaller sheds "
         "(fresh spray dripping off the face) fall without carving anything.",
     )
@@ -602,6 +672,25 @@ if __name__ == "__main__":
         type=float,
         default=NOZZLE_DISTANCE,
         help="Perpendicular nozzle-to-wall distance in meters.",
+    )
+    parser.add_argument(
+        "--rebar",
+        action="store_true",
+        help="Embed a rebar mesh in front of the wall; once the deposit engulfs it, the anchored bars "
+        "carry it and the drop-down happens markedly later than on the bare wall.",
+    )
+    parser.add_argument(
+        "--rebar-cover",
+        type=float,
+        default=REBAR_COVER,
+        help="Distance from the wall face to the rebar axis in meters (with --rebar). Must stay inside "
+        "the bare deposit's ~0.125 m critical protrusion, or the deposit never reaches the mesh.",
+    )
+    parser.add_argument(
+        "--overhead",
+        action="store_true",
+        help="Spray straight up at a ceiling instead of at the vertical wall; the deposit hangs by "
+        "adhesion alone, so it drops down at much thinner layers and much sooner.",
     )
     parser.add_argument(
         "--output-dir", type=str, default="voxel_drop_down_frames", help="Directory for the saved PNG frames."
@@ -623,6 +712,9 @@ if __name__ == "__main__":
         failure_trigger=args.failure_trigger,
         failure_cooldown=args.failure_cooldown,
         nozzle_distance=args.nozzle_distance,
+        rebar=args.rebar,
+        rebar_cover=args.rebar_cover,
+        overhead=args.overhead,
         output_dir=args.output_dir,
     )
 

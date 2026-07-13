@@ -351,7 +351,6 @@ def failure_ball_damage_kernel(
     dry: wp.array4d(dtype=wp.uint8),
     failed_count: wp.array(dtype=wp.int32),
     failed_positions: wp.array2d(dtype=wp.vec3i),
-    fire_scale: wp.array(dtype=wp.float32),
     failure_damage: wp.array(dtype=wp.float32),
     failure_damage_decay: wp.array(dtype=wp.float32),
     ball: wp.array(dtype=wp.vec3i),
@@ -370,7 +369,7 @@ def failure_ball_damage_kernel(
     j, i, widx = wp.tid()
     if i >= failed_count[widx]:
         return
-    peak = failure_damage[widx] * fire_scale[widx]
+    peak = failure_damage[widx]
     dmg = peak - wp.length(wp.vec3f(ball[j])) * failure_damage_decay[widx]
     if dmg <= 0.0:
         return
@@ -937,7 +936,7 @@ def spray_diffusion_kernel(
     net = wp.float32(0.0)
     for j in range(k):
         w = diffusion_weight(voxels, direction, sigma[widx], anisotropic_distance_weight[widx], widx, i, j)
-        net += w * wp.pow(mass_prev[widx, j] - m_i, 3.0) / wp.max(s_i, densities[widx, j])
+        net += w * (mass_prev[widx, j] - m_i) / wp.max(s_i, densities[widx, j])
     mass[widx, i] = m_i + redistribution_rate[widx] * net
 
 
@@ -1127,7 +1126,7 @@ def update_directions_kernel(
     mass: wp.array2d(dtype=wp.float32),
 ):
     widx, i = wp.tid()
-    z = 1.0 - (1.0 - wp.cos(nozzle_angle[widx] * 1.4)) * (wp.float32(i) + 0.5) / wp.float32(k)
+    z = 1.0 - (1.0 - wp.cos(nozzle_angle[widx] * 1.3)) * (wp.float32(i) + 0.5) / wp.float32(k)
     state = wp.rand_init(t[0])
     phi = wp.float32(i) * wp.pi * (3.0 - wp.sqrt(5.0)) + wp.randf(state, 0.0, wp.pi * 2.0)
     positions[widx, i] = wp.vec3i((wp.transform_get_translation(ee_transforms[widx]) - voxel_pos[widx]) / h) + wp.vec3i(

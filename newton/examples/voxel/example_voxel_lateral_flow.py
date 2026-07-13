@@ -88,8 +88,8 @@ DROPLET_MASS = 1.0 / 12.0  # solver parameter `droplet_mass` (voxel-mass units)
 NOZZLE_OPENING_ANGLE = float(np.arctan(0.3))  # rad, half-angle of the spray cone
 # redistribution (lateral-flow diffusion) parameters, see --sweep: the solver takes
 # the Gaussian smoothing length sigma in VOXELS, so define it in meters and convert
-OVERLAP_DISTANCE = 0.04  # m; kernel width sigma of the droplet-mass diffusion
-REDISTRIBUTION_RATE = 1.0  # per-pass diffusion rate, stable for <= 1
+OVERLAP_DISTANCE = 0.08  # m; kernel width sigma of the droplet-mass diffusion
+REDISTRIBUTION_RATE = 0.5  # per-pass diffusion rate, stable for <= 1
 
 # radial binning of the profiles; the innermost ring of the solver's Fibonacci spray
 # spiral lands at r ~ 12 mm, so bins must be wider than that to sample the center evenly
