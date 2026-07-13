@@ -22,6 +22,20 @@ propagated through its adhesion/shear/compression network, and the solver's
 ``drop_down_kernel`` deletes the overloaded voxels and drops them to the floor -- the
 cohesive-failure ("drop down") event this example captures.
 
+The failure is then widened into a crater seeded at the break surface: failed voxels
+that snapped off still-standing material cast a radially decaying damage ball (peak
+``failure_damage``, falloff ``failure_damage_decay`` per voxel, so a radius of at most
+``failure_damage / failure_damage_decay``) onto the surrounding deposit, and a single
+follow-up drop-down removes everything whose remaining load capacity went negative.
+Chunks that fall merely because they were already disconnected seed nothing -- craters
+around falling debris would cascade through the healthy deposit. The cut is
+all-or-nothing: below ``failure_trigger`` break-surface voxels (fresh spray dripping
+off an at-capacity face) nothing fires and the shed simply falls; at or above it the
+full crater is carved and further cuts are suppressed for ``failure_cooldown`` checks,
+so the aftershocks of the collapse shed as plain drop-downs -- afterwards the spray
+builds the surface back up until the deposit outgrows its load envelope and the cycle
+repeats.
+
 Every step the exposed deposit surface is extracted on the GPU (a voxel is rendered
 iff its total density reaches the occupancy threshold and at least one of its six
 neighbours does not) and drawn as per-voxel cubes: rebar in rusty steel, shotcrete
@@ -172,7 +186,7 @@ class Example:
     def __init__(
         self,
         viewer,
-        num_frames=600,
+        num_frames=6000,
         headless=False,
         frame_interval=10,
         failure_threshold=5.0,
@@ -180,7 +194,8 @@ class Example:
         droplet_mass_scale=1.0,
         failure_damage=1000.0,
         failure_decay=50.0,
-        damage_iterations=50,
+        failure_trigger=10.0,
+        failure_cooldown=10,
         nozzle_distance=NOZZLE_DISTANCE,
         output_dir="voxel_drop_down_frames",
     ):
@@ -239,7 +254,8 @@ class Example:
             wet_strength_penalty=1.0,
             failure_damage=failure_damage,
             failure_damage_decay=failure_decay,
-            failure_damage_iterations=damage_iterations,
+            failure_trigger=failure_trigger,
+            failure_cooldown=failure_cooldown,
             generate_rebar=False,
             use_bounding_boxes=False,
             sigma=0.5,
@@ -281,12 +297,13 @@ class Example:
         )
 
         # ring-buffer capture state; entries are (step, image or None, field slices)
-        self.pre_frames = collections.deque(maxlen=5)
+        self.pre_frames = collections.deque(maxlen=10)
         self.post_frames = []
-        self.post_count = 5  # failure frame + 4 after
+        self.post_count = 100  # failure frame + 4 after
         self.next_capture = None
         self.failure_step = None
         self.total_lost = 0.0
+        self.lost_history = []  # per-step detached mass, for the rebuild check
         self.frames_saved = False
         self.saved_paths = []
         self.saved_frames = []
@@ -309,7 +326,10 @@ class Example:
 
     def step(self):
         if self.closing or self.sim_step >= self.num_frames:
+            print("stopping")
             return
+        else:
+            print("step", self.sim_step, "time", self.sim_time)
 
         self.rewards.step()
         self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.rewards, self.frame_dt)
@@ -317,6 +337,7 @@ class Example:
 
         lost = float(self.rewards.adhesion_failure_amount.numpy()[0])
         self.total_lost += lost
+        self.lost_history.append(lost)
         if self.failure_step is None and lost >= self.failure_threshold:
             self.failure_step = self.sim_step
             print(f"adhesion failure at step {self.sim_step}: {lost:.1f} voxel-mass units dropped")
@@ -438,7 +459,7 @@ class Example:
         try:
             import matplotlib  # noqa: PLC0415
 
-            matplotlib.use("Agg")
+            # matplotlib.use("Agg")
             import matplotlib.pyplot as plt  # noqa: PLC0415
         except ImportError:
             return
@@ -492,8 +513,8 @@ class Example:
         fig.suptitle(f"y-z slice at x = {self.slice_x}{' -- failure step' if tag else ''}")
         fig.tight_layout()
         path = os.path.join(self.output_dir, f"slice_{idx:02d}_step{step:04d}{tag}.png")
-        fig.savefig(path, dpi=200)
         # plt.show()
+        fig.savefig(path, dpi=200)
         self.saved_slice_paths.append(path)
 
     def test_final(self):
@@ -501,6 +522,21 @@ class Example:
             "no adhesion failure occurred; lower --strength-scale or raise --droplet-mass-scale"
         )
         assert self.total_lost >= self.failure_threshold, "detached mass below the failure threshold"
+        # rebuild check: after the failure event the crater must stop chewing, i.e. a
+        # window with only marginal shedding must exist so fresh spray can re-accumulate
+        # on the break surface. The overfed spot keeps shedding a little at every
+        # adhesion check and the exact level varies run to run (GPU atomics), so the
+        # bound is relative: the quietest post-failure window must lose far less than
+        # the loudest one -- a permanently cascading failure has no such contrast.
+        post = self.lost_history[self.failure_step + 1 :]
+        if len(post) >= 100:
+            window = 50
+            sums = [sum(post[start : start + window]) for start in range(len(post) - window + 1)]
+            quiet = min(sums) < max(50.0, 0.2 * max(sums))
+            assert quiet, (
+                f"failure keeps propagating: quietest {window}-step window lost {min(sums):.0f}, "
+                f"loudest {max(sums):.0f}"
+            )
         if self.saved_paths:
             assert all(os.path.exists(p) for p in self.saved_paths), "saved frame files are missing"
             assert len(self.saved_paths) >= self.post_count + 1, "too few frames captured around the failure"
@@ -520,7 +556,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--failure-threshold",
         type=float,
-        default=5.0,
+        default=50.0,
         help="Detached mass (voxel-mass units) in one step that counts as the failure event.",
     )
     parser.add_argument(
@@ -539,19 +575,27 @@ if __name__ == "__main__":
         "--failure-damage",
         type=float,
         default=1000.0,
-        help="Crack energy seeded at the failure surface (0 disables back-propagation).",
+        help="Peak load damage cast around just-failed voxels (0 disables the crater cut).",
     )
     parser.add_argument(
         "--failure-decay",
         type=float,
         default=50.0,
-        help="Crack energy lost per voxel; reach is about failure-damage/failure-decay voxels.",
+        help="Damage lost per voxel of distance; crater radius is at most failure-damage/failure-decay voxels.",
     )
     parser.add_argument(
-        "--damage-iterations",
+        "--failure-trigger",
+        type=float,
+        default=10.0,
+        help="Minimum break-surface size (snapped-off voxels) for the crater cut to fire; smaller sheds "
+        "(fresh spray dripping off the face) fall without carving anything.",
+    )
+    parser.add_argument(
+        "--failure-cooldown",
         type=int,
-        default=50,
-        help="Crack-propagation rounds per adhesion check; one round advances the crack one voxel.",
+        default=10,
+        help="Adhesion checks after a full-strength crater during which the cut is suppressed, so the "
+        "aftershocks of a collapse shed as plain drop-downs instead of cascading craters.",
     )
     parser.add_argument(
         "--nozzle-distance",
@@ -562,7 +606,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output-dir", type=str, default="voxel_drop_down_frames", help="Directory for the saved PNG frames."
     )
-    parser.set_defaults(num_frames=600)
+    parser.set_defaults(num_frames=6000)
 
     viewer, args = newton.examples.init(parser)
 
@@ -576,7 +620,8 @@ if __name__ == "__main__":
         droplet_mass_scale=args.droplet_mass_scale,
         failure_damage=args.failure_damage,
         failure_decay=args.failure_decay,
-        damage_iterations=args.damage_iterations,
+        failure_trigger=args.failure_trigger,
+        failure_cooldown=args.failure_cooldown,
         nozzle_distance=args.nozzle_distance,
         output_dir=args.output_dir,
     )

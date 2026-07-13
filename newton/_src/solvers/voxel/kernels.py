@@ -89,8 +89,12 @@ def update_distances_kernel(
         distance[widx, pos[0], pos[1], pos[2]] = wp.min(
             distance[widx, pos[0], pos[1], pos[2]],
             wp.where(
+                # same occupancy threshold as the load/capacity kernels: sub-half
+                # residue must not conduct distance, or the fuzzy shell left floating
+                # by a drop-down keeps stale near-anchor distances alive in the void
+                # and material rebuilt onto it inherits them, starving its capacity
                 total_density_is_smaller(
-                    wet[widx, pos[0], pos[1], pos[2]], dry[widx, pos[0], pos[1], pos[2]], DENSITY_10_PERCENT
+                    wet[widx, pos[0], pos[1], pos[2]], dry[widx, pos[0], pos[1], pos[2]], DENSITY_HALF
                 ),
                 DISTANCE_MAX,
                 min_six_way(
@@ -130,7 +134,7 @@ def global_update_distances_kernel(
         if is_wall(w, d):
             # wall, floor, and rebar anchor the field at DISTANCE_ZERO
             continue
-        if total_density_is_smaller(w, d, DENSITY_10_PERCENT):
+        if total_density_is_smaller(w, d, DENSITY_HALF):
             distance[widx, ii, j, kk] = DISTANCE_MAX
             continue
         distance[widx, ii, j, kk] = wp.min(
@@ -222,11 +226,23 @@ def drop_down_kernel(
         if current_load[widx, i, j, k] < LOAD_ZERO:
             w = wet[widx, i, j, k]
             d = dry[widx, i, j, k]
+            if total_density_is_smaller(w, d, DENSITY_HALF):
+                # already-emptied voxel (a just-failed marker from an earlier pass
+                # this check): nothing to move -- advancing write_pos here would
+                # punch air gaps into the debris pile and make it re-collapse
+                continue
 
             wet[widx, i, j, k] = DENSITY_ZERO
             dry[widx, i, j, k] = DENSITY_ZERO
             distance[widx, i, j, k] = DISTANCE_MAX
             wet[widx, i, j, write_pos] = saturating_add(w, d)
+            # the landing voxel must be spared (LOAD_ZERO) or the debris re-fails on
+            # every subsequent pass: with write_pos == k the voxel re-deposits into
+            # itself and would keep its own negative load, with write_pos below it
+            # inherits the negative load of a voxel emptied earlier this scan --
+            # either way it festers as never-clearing "failed" mass that is
+            # re-counted every check and eventually mis-fires the crater cut
+            current_load[widx, i, j, write_pos] = LOAD_ZERO
             wp.atomic_add(
                 adhesion_failure_amount, widx, wp.float32(w) / DENSITY_MAX_F32 + wp.float32(d) / DENSITY_MAX_F32
             )
@@ -247,55 +263,31 @@ def just_failed(wet: wp.uint8, dry: wp.uint8, load: wp.int16) -> bool:
 
 
 @wp.func
-def crack_energy(wet: wp.uint8, dry: wp.uint8, load: wp.int16) -> wp.int32:
-    # a voxel emptied by drop_down keeps its negative load, which the failure-damage
-    # rounds use to store the crack energy it still carries
-    return wp.where(total_density_is_smaller(wet, dry, DENSITY_HALF), wp.max(-wp.int32(load), 0), 0)
+def standing_material(wet: wp.uint8, dry: wp.uint8, load: wp.int16) -> bool:
+    # occupied and load-bearing: the material a break surface snapped away from
+    return not total_density_is_smaller(wet, dry, DENSITY_HALF) and load > LOAD_ZERO
 
 
 @wp.kernel
-def seed_failure_energy_kernel(
+def gather_failed_kernel(
     wet: wp.array4d(dtype=wp.uint8),
     dry: wp.array4d(dtype=wp.uint8),
     current_load: wp.array4d(dtype=wp.int16),
     bbox: wp.array2d(dtype=wp.int32),
-    failure_damage: wp.array(dtype=wp.float32),
+    failed_count: wp.array(dtype=wp.int32),
+    failed_positions: wp.array2d(dtype=wp.vec3i),
 ):
-    """Charge the just-failed voxels with the crack energy ``failure_damage``."""
-    widx, i, j = wp.tid()
-    ii = i + 1
-    jj = j + 1
-    if not in_bbox_all_height(bbox[widx], wp.vec3i(ii, jj, 0)):
-        return
-    for k in range(1, wet.shape[3] - 1):
-        if not in_bbox(bbox[widx], wp.vec3i(ii, jj, k)):
-            continue
-        if just_failed(wet[widx, ii, jj, k], dry[widx, ii, jj, k], current_load[widx, ii, jj, k]):
-            current_load[widx, ii, jj, k] = wp.min(
-                current_load[widx, ii, jj, k], wp.int16(-wp.min(failure_damage[widx], 32767.0))
-            )
+    """Collect the break surface of the last drop_down.
 
+    Only failed voxels with at least one standing (occupied, positive-load) neighbour
+    are stored: that is where material physically snapped off and where the crack
+    energy is released. Voxels of chunks that fell merely because they were already
+    disconnected have no such neighbour -- seeding craters around them would carve
+    fresh holes into the healthy deposit they fall past, disconnect further chunks and
+    cascade until the whole deposit is gone.
 
-@wp.kernel
-def failure_damage_kernel(
-    wet: wp.array4d(dtype=wp.uint8),
-    dry: wp.array4d(dtype=wp.uint8),
-    current_load: wp.array4d(dtype=wp.int16),
-    bbox: wp.array2d(dtype=wp.int32),
-    failure_damage_decay: wp.array(dtype=wp.float32),
-):
-    """Energy-driven crack propagation into the deposit.
-
-    Just-failed voxels (emptied by drop_down, load still negative) carry crack energy
-    ``-load``, seeded with ``failure_damage`` at the initial failure surface. Each
-    round, an occupied voxel next to the crack takes the largest neighbouring energy
-    minus ``failure_damage_decay`` off its load; if that breaks it (load < 0), the
-    next drop_down empties it and the remainder -- energy minus decay minus the
-    margin spent breaking the voxel -- travels on. The crack therefore reaches
-    ~``failure_damage / failure_damage_decay`` voxels in weak material and is
-    arrested earlier by well-supported (high-load) material. Voxels at exactly
-    ``LOAD_ZERO`` are spared so the re-deposited debris cannot re-fail and
-    double-count itself.
+    ``failed_count`` keeps counting past the buffer capacity; the overflowing
+    positions are silently dropped (the crater is carved from the stored sites only).
     """
     widx, i, j = wp.tid()
     ii = i + 1
@@ -305,32 +297,128 @@ def failure_damage_kernel(
     for k in range(1, wet.shape[3] - 1):
         if not in_bbox(bbox[widx], wp.vec3i(ii, jj, k)):
             continue
-        w = wet[widx, ii, jj, k]
-        d = dry[widx, ii, jj, k]
-        if is_wall(w, d) or total_density_is_smaller(w, d, DENSITY_HALF):
+        if not just_failed(wet[widx, ii, jj, k], dry[widx, ii, jj, k], current_load[widx, ii, jj, k]):
             continue
-        if current_load[widx, ii, jj, k] <= LOAD_ZERO:
+        if not (
+            standing_material(wet[widx, ii + 1, jj, k], dry[widx, ii + 1, jj, k], current_load[widx, ii + 1, jj, k])
+            or standing_material(wet[widx, ii - 1, jj, k], dry[widx, ii - 1, jj, k], current_load[widx, ii - 1, jj, k])
+            or standing_material(wet[widx, ii, jj + 1, k], dry[widx, ii, jj + 1, k], current_load[widx, ii, jj + 1, k])
+            or standing_material(wet[widx, ii, jj - 1, k], dry[widx, ii, jj - 1, k], current_load[widx, ii, jj - 1, k])
+            or standing_material(wet[widx, ii, jj, k + 1], dry[widx, ii, jj, k + 1], current_load[widx, ii, jj, k + 1])
+            or standing_material(wet[widx, ii, jj, k - 1], dry[widx, ii, jj, k - 1], current_load[widx, ii, jj, k - 1])
+        ):
             continue
-        e = crack_energy(wet[widx, ii + 1, jj, k], dry[widx, ii + 1, jj, k], current_load[widx, ii + 1, jj, k])
-        e = wp.max(
-            e, crack_energy(wet[widx, ii - 1, jj, k], dry[widx, ii - 1, jj, k], current_load[widx, ii - 1, jj, k])
-        )
-        e = wp.max(
-            e, crack_energy(wet[widx, ii, jj + 1, k], dry[widx, ii, jj + 1, k], current_load[widx, ii, jj + 1, k])
-        )
-        e = wp.max(
-            e, crack_energy(wet[widx, ii, jj - 1, k], dry[widx, ii, jj - 1, k], current_load[widx, ii, jj - 1, k])
-        )
-        e = wp.max(
-            e, crack_energy(wet[widx, ii, jj, k + 1], dry[widx, ii, jj, k + 1], current_load[widx, ii, jj, k + 1])
-        )
-        e = wp.max(
-            e, crack_energy(wet[widx, ii, jj, k - 1], dry[widx, ii, jj, k - 1], current_load[widx, ii, jj, k - 1])
-        )
-        e -= wp.int32(failure_damage_decay[widx])
-        if e > 0:
-            new_load = wp.int32(current_load[widx, ii, jj, k]) - e
-            current_load[widx, ii, jj, k] = wp.int16(wp.max(new_load, -32767))
+        idx = wp.atomic_add(failed_count, widx, 1)
+        if idx < failed_positions.shape[1]:
+            failed_positions[widx, idx] = wp.vec3i(ii, jj, k)
+
+
+@wp.kernel
+def failure_cooldown_kernel(
+    failed_count: wp.array(dtype=wp.int32),
+    failure_trigger: wp.array(dtype=wp.float32),
+    failure_cooldown: wp.int32,
+    cooldown_state: wp.array(dtype=wp.int32),
+    fire_scale: wp.array(dtype=wp.float32),
+):
+    """Fire the crater cut when the break surface is large enough, then rest.
+
+    The cut is all-or-nothing. An overfed face continuously sheds small patches of
+    fresh spray (a few break-surface voxels per check), and any proportional response
+    is unstable: even a small damage ball removes many times the shed's own mass of
+    healthy supported deposit, which re-exposes fresh weak surface, which sheds again
+    at the next check -- craters then re-fire forever and the surface can never build
+    back up. So below ``failure_trigger`` break-surface voxels nothing fires and the
+    shed simply drips off; at or above it -- a genuine structural collapse -- the full
+    crater is carved and a cooldown of ``failure_cooldown`` checks arms during which
+    the cut stays suppressed, letting the aftershocks shed as plain drop-downs.
+    """
+    widx = wp.tid()
+    if cooldown_state[widx] > 0:
+        cooldown_state[widx] = cooldown_state[widx] - 1
+        fire_scale[widx] = 0.0
+        return
+    if wp.float32(failed_count[widx]) >= failure_trigger[widx]:
+        fire_scale[widx] = 1.0
+        cooldown_state[widx] = failure_cooldown
+    else:
+        fire_scale[widx] = 0.0
+
+
+@wp.kernel
+def failure_ball_damage_kernel(
+    wet: wp.array4d(dtype=wp.uint8),
+    dry: wp.array4d(dtype=wp.uint8),
+    failed_count: wp.array(dtype=wp.int32),
+    failed_positions: wp.array2d(dtype=wp.vec3i),
+    fire_scale: wp.array(dtype=wp.float32),
+    failure_damage: wp.array(dtype=wp.float32),
+    failure_damage_decay: wp.array(dtype=wp.float32),
+    ball: wp.array(dtype=wp.vec3i),
+    damage_field: wp.array4d(dtype=wp.int32),
+):
+    """Project a radially decaying damage ball around every just-failed voxel.
+
+    Each stored failure site casts ``peak - |offset| * failure_damage_decay`` onto the
+    occupied voxels of the surrounding ball, with ``peak = failure_damage * fire_scale``
+    as decided by :func:`failure_cooldown_kernel`: a genuine collapse carves the full
+    crater of radius ~``failure_damage / failure_damage_decay`` while stray rim voxels
+    and drips barely scratch the deposit, letting the surface build back up.
+    Overlapping balls combine by maximum (not sum) so clustered failure sites do not
+    multiply the damage.
+    """
+    j, i, widx = wp.tid()
+    if i >= failed_count[widx]:
+        return
+    peak = failure_damage[widx] * fire_scale[widx]
+    dmg = peak - wp.length(wp.vec3f(ball[j])) * failure_damage_decay[widx]
+    if dmg <= 0.0:
+        return
+    pos = failed_positions[widx, i] + ball[j]
+    if not valid_pos(pos, wet.shape, 1):
+        return
+    w = wet[widx, pos[0], pos[1], pos[2]]
+    d = dry[widx, pos[0], pos[1], pos[2]]
+    # damage everything that holds any material (the sub-half residue too, so the
+    # cut can pulverize it); walls and empty voxels take nothing
+    if is_wall(w, d) or wp.int32(w) + wp.int32(d) == 0:
+        return
+    wp.atomic_max(damage_field, widx, pos[0], pos[1], pos[2], wp.int32(dmg))
+
+
+@wp.kernel
+def apply_failure_damage_kernel(
+    damage_field: wp.array4d(dtype=wp.int32),
+    wet: wp.array4d(dtype=wp.uint8),
+    dry: wp.array4d(dtype=wp.uint8),
+    distance: wp.array4d(dtype=wp.uint8),
+    current_load: wp.array4d(dtype=wp.int16),
+    adhesion_failure_amount: wp.array(dtype=wp.float32),
+):
+    """Subtract the accumulated ball damage from the load-capacity field.
+
+    Voxels at exactly ``LOAD_ZERO`` are spared so the re-deposited debris cannot
+    re-fail and double-count itself; the final drop_down then removes every voxel
+    whose remaining capacity went negative, in one geometry change. Sub-half residue
+    (the deposit's fuzzy shell) inside the cut is pulverized outright: drop_down never
+    touches it (it carries no load), so it would linger as phantom material floating
+    in the crater.
+    """
+    widx, i, j, k = wp.tid()
+    dmg = damage_field[widx, i, j, k]
+    if dmg <= 0:
+        return
+    w = wet[widx, i, j, k]
+    d = dry[widx, i, j, k]
+    if total_density_is_smaller(w, d, DENSITY_HALF):
+        wet[widx, i, j, k] = DENSITY_ZERO
+        dry[widx, i, j, k] = DENSITY_ZERO
+        distance[widx, i, j, k] = DISTANCE_MAX
+        wp.atomic_add(adhesion_failure_amount, widx, wp.float32(w) / DENSITY_MAX_F32 + wp.float32(d) / DENSITY_MAX_F32)
+        return
+    if current_load[widx, i, j, k] <= LOAD_ZERO:
+        return
+    current_load[widx, i, j, k] = wp.int16(wp.max(wp.int32(current_load[widx, i, j, k]) - dmg, -32767))
 
 
 @wp.func
@@ -399,29 +487,6 @@ def capacity_propagation_kernel(
                 current_load[widx, other[0], other[1], other[2]] = wp.max(
                     current_load[widx, other[0], other[1], other[2]], new_val
                 )
-
-
-@wp.kernel
-def failure_spread_kernel(
-    wet: wp.array4d(dtype=wp.uint8),
-    dry: wp.array4d(dtype=wp.uint8),
-    current_load: wp.array4d(dtype=wp.int16),
-    indices: wp.array(dtype=wp.vec3i),
-    positions: wp.array2d(dtype=wp.vec3i),
-):
-    j, i, widx = wp.tid()
-    pos = positions[widx, i] + indices[j]
-    if valid_pos(pos, wet.shape):
-        if not total_density_is_smaller(
-            wet[widx, pos[0], pos[1], pos[2]], dry[widx, pos[0], pos[1], pos[2]], DENSITY_HALF
-        ):
-            dist = wp.int16((1.0 - 0.5 * wp.length(wp.vec3f(indices[j]))) * 2.0)
-            current_load[
-                widx,
-                positions[widx, i][0] + indices[j][0],
-                positions[widx, i][1] + indices[j][1],
-                positions[widx, i][2] + indices[j][2],
-            ] -= relu(dist)
 
 
 @wp.kernel
