@@ -104,7 +104,7 @@ NOZZLE_DISTANCE = 0.5  # m, perpendicular nozzle-to-wall distance
 # ~20-voxel support-chain envelope): only then does the growing deposit engulf the
 # mesh, get re-anchored by it and demonstrably drop down later; a mesh further out is
 # never reached and cannot carry anything
-REBAR_COVER = 0.10  # m, wall face to bar axis
+REBAR_COVER = 0.05  # m, wall face to bar axis
 REBAR_THICKNESS = 3  # voxels
 REBAR_SPACING = 15  # voxels
 REBAR_COUNT = (8, 8)  # (vertical bars, horizontal bars)
@@ -583,7 +583,7 @@ class Example:
         fig.suptitle(f"y-z slice at x = {self.slice_x}{' -- failure step' if tag else ''}")
         fig.tight_layout()
         path = os.path.join(self.output_dir, f"slice_{idx:02d}_step{step:04d}{tag}.png")
-        plt.show()
+        # plt.show()
         fig.savefig(path, dpi=200)
         self.saved_slice_paths.append(path)
 
@@ -644,7 +644,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--failure-damage",
         type=float,
-        default=1000.0,
+        default=1200.0,
         help="Peak load damage cast around just-failed voxels (0 disables the crater cut).",
     )
     parser.add_argument(

@@ -281,6 +281,7 @@ class Example:
             droplet_mass=DROPLET_MASS,
             nozzle_opening_angle=NOZZLE_OPENING_ANGLE,
             overlap_distance=OVERLAP_DISTANCE / VOXEL_SIZE,
+            redistribution_rate=REDISTRIBUTION_RATE,
             # the first pass measures the incident flux: without the in-flight mass
             # shaping every droplet deposits its generated mass at its impact site
             redistribution=False,

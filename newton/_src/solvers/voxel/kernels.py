@@ -875,14 +875,22 @@ def diffusion_weight(
     voxels: wp.array2d(dtype=wp.vec3i),
     direction: wp.vec3f,
     sigma: wp.float32,
+    cutoff: wp.float32,
     parallel_weight: wp.float32,
     widx: wp.int32,
     i: wp.int32,
     j: wp.int32,
 ) -> wp.float32:
-    """Symmetric Gaussian kernel weight between the impact points of droplets i and j."""
+    """Symmetric truncated-Gaussian kernel weight between the impacts of droplets i and j.
+
+    The hard cutoff at ``cutoff * sigma`` matters: an untruncated Gaussian still
+    couples pairs several sigma apart, so the loaded footprint center donates mass
+    directly to the sparse far rim in a single pass and the placement profile grows a
+    fat exponential tail that the reference measurements do not show. Truncated, far
+    transport requires chained hops and dies off sharply.
+    """
     dist = anisotropic_distance(wp.vec3f(voxels[widx, i]), wp.vec3f(voxels[widx, j]), direction, parallel_weight)
-    return wp.exp(-dist * dist / (2.0 * sigma * sigma))
+    return wp.where(dist > cutoff * sigma, wp.float32(0.0), wp.exp(-dist * dist / (2.0 * sigma * sigma)))
 
 
 @wp.kernel
@@ -890,6 +898,7 @@ def spray_density_kernel(
     voxels: wp.array2d(dtype=wp.vec3i),
     transforms: wp.array(dtype=wp.transform),
     sigma: wp.array(dtype=wp.float32),
+    flow_cutoff: wp.array(dtype=wp.float32),
     anisotropic_distance_weight: wp.array(dtype=wp.float32),
     k: wp.int32,
     densities: wp.array2d(dtype=wp.float32),
@@ -904,7 +913,9 @@ def spray_density_kernel(
     direction = wp.transform_vector(transforms[widx], wp.vec3f(1.0, 0.0, 0.0))
     s = wp.float32(0.0)
     for j in range(k):
-        s += diffusion_weight(voxels, direction, sigma[widx], anisotropic_distance_weight[widx], widx, i, j)
+        s += diffusion_weight(
+            voxels, direction, sigma[widx], flow_cutoff[widx], anisotropic_distance_weight[widx], widx, i, j
+        )
     densities[widx, i] = s
 
 
@@ -915,29 +926,44 @@ def spray_diffusion_kernel(
     densities: wp.array2d(dtype=wp.float32),
     transforms: wp.array(dtype=wp.transform),
     sigma: wp.array(dtype=wp.float32),
+    flow_cutoff: wp.array(dtype=wp.float32),
     anisotropic_distance_weight: wp.array(dtype=wp.float32),
     redistribution_rate: wp.array(dtype=wp.float32),
+    flow_capacity: wp.array(dtype=wp.float32),
+    total_droplet_mass: wp.array(dtype=wp.float32),
     k: wp.int32,
     mass: wp.array2d(dtype=wp.float32),
 ):
     """One gather-formulated mass-diffusion pass over the droplets of a spray event.
 
-    The pairwise flux ``rate * w_ij * (m_j - m_i) / max(S_i, S_j)`` is exactly
+    The pairwise flux ``rate * w_ij * (e_j - e_i) / max(S_i, S_j)`` is exactly
     antisymmetric and both threads of a pair evaluate it from the same double-buffered
     inputs, so the total mass is conserved by construction -- no scatter writes, no
-    atomics, no donor overdraw. The density normalization bounds every droplet's
-    per-pass change by ``rate`` times its local mass contrast, so masses stay
-    non-negative and stable for ``rate <= 1``.
+    atomics, no donor overdraw.
+
+    ``e = relu(m - capacity)`` is the droplet's mobile excess: fresh concrete flows
+    laterally only while the local overload beats its yield stress, so only the mass
+    above ``flow_capacity`` (in units of the mean per-droplet mass) takes part in the
+    diffusion and a droplet at or below capacity stops donating entirely. The center
+    sheds its overload as a spreading front that dies where the excess runs out --
+    the placement profile keeps its central plateau and falls off sharply instead of
+    draining the center into an ever-widening tail. ``flow_capacity = 0`` recovers the
+    plain mass diffusion. The density normalization bounds every droplet's per-pass
+    donation by ``rate`` times its own excess, so masses never drop below the capacity
+    and stay stable for ``rate <= 1``.
     """
     widx, i = wp.tid()
     direction = wp.transform_vector(transforms[widx], wp.vec3f(1.0, 0.0, 0.0))
-    m_i = mass_prev[widx, i]
+    capacity = flow_capacity[widx] * total_droplet_mass[widx]
+    e_i = relu(mass_prev[widx, i] - capacity)
     s_i = densities[widx, i]
     net = wp.float32(0.0)
     for j in range(k):
-        w = diffusion_weight(voxels, direction, sigma[widx], anisotropic_distance_weight[widx], widx, i, j)
-        net += w * (mass_prev[widx, j] - m_i) / wp.max(s_i, densities[widx, j])
-    mass[widx, i] = m_i + redistribution_rate[widx] * net
+        w = diffusion_weight(
+            voxels, direction, sigma[widx], flow_cutoff[widx], anisotropic_distance_weight[widx], widx, i, j
+        )
+        net += w * (relu(mass_prev[widx, j] - capacity) - e_i) / wp.max(s_i, densities[widx, j])
+    mass[widx, i] = mass_prev[widx, i] + redistribution_rate[widx] * net
 
 
 @wp.kernel

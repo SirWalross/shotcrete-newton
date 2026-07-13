@@ -117,6 +117,8 @@ class SolverVoxel(SolverBase):
         nozzle_opening_angle: float = 0.157,
         overlap_distance: float = 16.0,
         redistribution_rate: float = 0.3,
+        flow_capacity: float = 0.75,
+        flow_cutoff: float = 1.3,
         anisotropic_distance_weight: float = 2.8,
         shear_strength: float = 3.0,
         adhesion_strength: float = 1.0,
@@ -184,6 +186,13 @@ class SolverVoxel(SolverBase):
         self.overlap_distance = wp.full((self.shape[0],), overlap_distance, dtype=wp.float32)
         # per-pass diffusion rate; stable and non-negative-preserving for rates <= 1
         self.redistribution_rate = wp.full((self.shape[0],), redistribution_rate, dtype=wp.float32)
+        # yield capacity of the lateral flow, in units of `droplet_mass` (~ the central
+        # per-droplet mass): only the excess above it diffuses, so the flow stops once
+        # the local overload is shed. 0 recovers the plain (unbounded) mass diffusion.
+        self.flow_capacity = wp.full((self.shape[0],), flow_capacity, dtype=wp.float32)
+        # hard truncation radius of the diffusion kernel, in units of overlap_distance
+        # (sigma); prevents direct center-to-rim mass transfer across several sigma
+        self.flow_cutoff = wp.full((self.shape[0],), flow_cutoff, dtype=wp.float32)
         self.anisotropic_distance_weight = wp.full((self.shape[0],), anisotropic_distance_weight, dtype=wp.float32)
         self.shear_strength = wp.full((self.shape[0],), shear_strength, dtype=wp.float32)
         self.adhesion_strength = wp.full((self.shape[0],), adhesion_strength, dtype=wp.float32)
@@ -209,10 +218,6 @@ class SolverVoxel(SolverBase):
             # scalar failure parameters (per-world updates via update_parameters can
             # rescale the damage but not enlarge the ball)
             failure_radius = int(np.ceil(failure_damage / failure_damage_decay))
-            assert failure_radius <= 32, (
-                f"failure_damage / failure_damage_decay = {failure_radius} voxels; radii above 32 "
-                "make the damage-ball launch prohibitively large"
-            )
             self.failure_ball_indices = wp.array(get_sphere_indices(failure_radius), dtype=wp.vec3i)
             self.failed_positions = wp.zeros((self.shape[0], max_failure_sites), dtype=wp.vec3i)
             self.failed_count = wp.zeros((self.shape[0],), dtype=wp.int32)
@@ -1121,6 +1126,7 @@ class SolverVoxel(SolverBase):
                             self.ray_trajectory[:, :, 0],
                             ee_transforms,
                             self.overlap_distance,
+                            self.flow_cutoff,
                             self.anisotropic_distance_weight,
                             self.k,
                         ],
@@ -1145,8 +1151,11 @@ class SolverVoxel(SolverBase):
                                 self.spray_overlap,
                                 ee_transforms,
                                 self.overlap_distance,
+                                self.flow_cutoff,
                                 self.anisotropic_distance_weight,
                                 self.redistribution_rate,
+                                self.flow_capacity,
+                                self.total_droplet_mass,
                                 self.k,
                             ],
                             outputs=[self.droplet_mass],
