@@ -56,7 +56,7 @@ NOZZLE_DISTANCE = 0.5  # m; short stand-off concentrates the footprint -> many r
 NOZZLE_OPENING_ANGLE = 0.157  # rad, solver default
 
 NUM_WORLDS = 64
-EVENTS_PER_CONFIG = 40
+EVENTS_PER_CONFIG = 200
 
 # droplet-count sweep; the per-droplet mass scales as 1/K so the total sprayed mass
 # per event stays constant and only the degree of parallelism changes

@@ -40,7 +40,6 @@ from .kernels import (
     drop_down_kernel,
     expand_global_bbox_kernel,
     failure_ball_damage_kernel,
-    failure_cooldown_kernel,
     gather_failed_kernel,
     initialize_load_kernel,
     out_of_bounds_spray_kernel,
@@ -126,8 +125,9 @@ class SolverVoxel(SolverBase):
         wet_strength_penalty: float = 0.6,
         failure_damage: float = 0.0,
         failure_damage_decay: float = 100.0,
-        failure_trigger: float = 20.0,
+        failure_trigger: float = 2.0,
         max_failure_sites: int = 1024,
+        capacity_iterations: int = 4,
         debug_mode: bool = False,
         adhesion_check_freq: int = 10,
         update_joints_and_bodies: bool = False,
@@ -213,6 +213,9 @@ class SolverVoxel(SolverBase):
         # not part of the break surface and contributes nothing either.
         self.failure_trigger = wp.full((self.shape[0],), failure_trigger, dtype=wp.float32)
         self.apply_failure_damage = failure_damage > 0.0
+        # rounds of the six directional capacity sweeps per load computation; each
+        # round resolves one direction change of a support path
+        self.capacity_iterations = capacity_iterations
         if self.apply_failure_damage:
             # ball offsets for the crater cut; the radius is fixed at init from the
             # scalar failure parameters (per-world updates via update_parameters can
@@ -222,9 +225,6 @@ class SolverVoxel(SolverBase):
             self.failed_positions = wp.zeros((self.shape[0], max_failure_sites), dtype=wp.vec3i)
             self.failed_count = wp.zeros((self.shape[0],), dtype=wp.int32)
             self.failure_damage_field = wp.zeros(self.shape, dtype=wp.int32)
-            # adhesion checks after a full-peak crater during which the cut stays
-            # suppressed, so a collapse's aftershock tranches shed as plain drop-downs
-            # instead of cascading full craters across the deposit
         # Per-world lidar occlusion radius (m); 0 disables occlusion (occluded view == clean view).
         self.occlusion_distance = wp.full((self.shape[0],), occlusion_distance, dtype=wp.float32)
 
@@ -666,11 +666,13 @@ class SolverVoxel(SolverBase):
             print=self.print_timings,
             dict=self.timing_dict,
         ):
-            # each round sweeps all six directions once; support paths that detour
-            # around craters and overhangs alternate direction several times, and a
-            # path is only resolved once every alternation has been swept in order --
-            # too few rounds starve genuinely attached material and it mass-fails
-            for _ in range(2):
+            # each round sweeps all six directions once, and a path is only resolved
+            # once every one of its direction changes has been swept in order. Plain
+            # wall deposits resolve in 2 rounds; support paths that detour around
+            # rebar bars and their spray shadows (or crater walls) alternate direction
+            # more often, and with too few rounds the material behind them receives no
+            # capacity at all and sheds at every check despite being firmly attached
+            for _ in range(self.capacity_iterations):
                 wp.launch(
                     capacity_propagation_kernel,
                     dim=(self.shape[0], self.shape[1] - 2, self.shape[2] - 2, 1),
@@ -800,6 +802,30 @@ class SolverVoxel(SolverBase):
 
     def adhesion_check(self, rewards: VoxelRewards):
         self._compute_loads()
+        load = wp.to_torch(self.model.voxel_load).cpu().numpy()
+        distance = wp.to_torch(self.model.voxel_distance).cpu().numpy()
+        wet = wp.to_torch(self.model.voxel_wet).cpu().numpy()
+        dry = wp.to_torch(self.model.voxel_dry).cpu().numpy()
+        index = np.argwhere(load < 0)
+        if index.shape[0] > 0:
+            # get indices of the six surrounding voxels for each failed voxel
+            indices = []
+            for i in range(-1, 2):
+                for j in range(-1, 2):
+                    for k in range(-1, 2):
+                        if abs(i) + abs(j) + abs(k) == 1:
+                            indices.append(index[0] + np.array([0, i, j, k]))
+            indices = np.array(indices)
+            print("Failed voxel indices:", index)
+            for idx in indices:
+                print("Surrounding voxel indices:", idx)
+                print("Failed voxel load values:", load[tuple(idx)])
+                print("Failed voxel distance values:", distance[tuple(idx)])
+                print("Failed voxel wet values:", wet[tuple(idx)])
+                print("Failed voxel dry values:", dry[tuple(idx)])
+        print(load[load < 0])
+        print(distance[load < 0])
+        print(wet[load < 0] + dry[load < 0])
         with wp.ScopedTimer(
             "drop down",
             active=self.active,
@@ -835,6 +861,8 @@ class SolverVoxel(SolverBase):
                     ],
                     outputs=[self.failed_count, self.failed_positions],
                 )
+                print(wp.to_torch(self.failed_count))
+                print(wp.to_torch(self.failed_positions))
                 wp.launch(
                     failure_ball_damage_kernel,
                     dim=(self.failure_ball_indices.shape[0], self.failed_positions.shape[1], self.shape[0]),
@@ -843,6 +871,7 @@ class SolverVoxel(SolverBase):
                         self.model.voxel_dry,
                         self.failed_count,
                         self.failed_positions,
+                        self.failure_trigger,
                         self.failure_damage,
                         self.failure_damage_decay,
                         self.failure_ball_indices,

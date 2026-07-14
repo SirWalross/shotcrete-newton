@@ -40,10 +40,8 @@ Chunks that fall merely because they were already disconnected seed nothing -- c
 around falling debris would cascade through the healthy deposit. The cut is
 all-or-nothing: below ``failure_trigger`` break-surface voxels (fresh spray dripping
 off an at-capacity face) nothing fires and the shed simply falls; at or above it the
-full crater is carved and further cuts are suppressed for ``failure_cooldown`` checks,
-so the aftershocks of the collapse shed as plain drop-downs -- afterwards the spray
-builds the surface back up until the deposit outgrows its load envelope and the cycle
-repeats.
+full crater is carved -- afterwards the spray builds the surface back up until the
+deposit outgrows its load envelope and the cycle repeats.
 
 Every step the exposed deposit surface is extracted on the GPU (a voxel is rendered
 iff its total density reaches the occupancy threshold and at least one of its six
@@ -207,10 +205,9 @@ class Example:
         failure_threshold=5.0,
         strength_scale=1.0,
         droplet_mass_scale=1.0,
-        failure_damage=1000.0,
-        failure_decay=10.0,
-        failure_trigger=20.0,
-        failure_cooldown=10,
+        failure_damage=3000.0,
+        failure_decay=5.0,
+        failure_trigger=50.0,
         nozzle_distance=NOZZLE_DISTANCE,
         rebar=False,
         rebar_cover=REBAR_COVER,
@@ -246,7 +243,8 @@ class Example:
             base_gy = wall_j - round(nozzle_distance / VOXEL_SIZE)
             assert base_gy >= 2, "grid too shallow for the requested nozzle distance"
             nozzle_grid = (GRID_X // 2, base_gy, GRID_Z // 2)
-            nozzle_dir = np.array([0.0, 1.0, 0.0])
+            nozzle_dir = np.array([0.0, 0.9, -0.02])
+            nozzle_dir = nozzle_dir / np.linalg.norm(nozzle_dir)
 
         nozzle = newton.ModelBuilder()
         # the solver looks up the TCP body via the `/World/envs/env_*/<name>` USD-style key
@@ -277,8 +275,8 @@ class Example:
             h=VOXEL_SIZE,
             k=DROPLET_COUNT,
             droplet_mass=DROPLET_MASS * droplet_mass_scale,
-            shear_strength=3.0 * strength_scale,
-            adhesion_strength=1.4 * strength_scale,
+            shear_strength=3.5 * strength_scale,
+            adhesion_strength=1.8 * strength_scale,
             compression_strength=80.0 * strength_scale,
             wet_strength_penalty=1.0,
             failure_damage=failure_damage,
@@ -363,7 +361,7 @@ class Example:
         # ring-buffer capture state; entries are (step, image or None, field slices)
         self.pre_frames = collections.deque(maxlen=10)
         self.post_frames = []
-        self.post_count = 100  # failure frame + 4 after
+        self.post_count = 10  # failure frame + 4 after
         self.next_capture = None
         self.failure_step = None
         self.total_lost = 0.0
@@ -387,7 +385,7 @@ class Example:
         else:
             wall_y = wall_j * VOXEL_SIZE
             spot_z = GRID_Z // 2 * VOXEL_SIZE
-            target = np.array([0.0, wall_y, spot_z - 0.08])
+            target = np.array([0.0, wall_y, spot_z - 0.16])
             pos = np.array([0.34, wall_y - 0.52, spot_z + 0.10])
         d = target - pos
         yaw = float(np.degrees(np.arctan2(d[1], d[0])))
@@ -661,13 +659,6 @@ if __name__ == "__main__":
         "(fresh spray dripping off the face) fall without carving anything.",
     )
     parser.add_argument(
-        "--failure-cooldown",
-        type=int,
-        default=10,
-        help="Adhesion checks after a full-strength crater during which the cut is suppressed, so the "
-        "aftershocks of a collapse shed as plain drop-downs instead of cascading craters.",
-    )
-    parser.add_argument(
         "--nozzle-distance",
         type=float,
         default=NOZZLE_DISTANCE,
@@ -710,7 +701,6 @@ if __name__ == "__main__":
         failure_damage=args.failure_damage,
         failure_decay=args.failure_decay,
         failure_trigger=args.failure_trigger,
-        failure_cooldown=args.failure_cooldown,
         nozzle_distance=args.nozzle_distance,
         rebar=args.rebar,
         rebar_cover=args.rebar_cover,

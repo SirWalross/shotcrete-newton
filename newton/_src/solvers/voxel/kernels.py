@@ -75,6 +75,21 @@ def solidify_kernel(
         dry[widx, i, j, k] = d + diff
 
 
+@wp.func
+def structural_distance(wet: wp.uint8, dry: wp.uint8, distance: wp.uint8, cost: wp.uint8) -> wp.uint8:
+    """Distance a neighbour offers, or DISTANCE_MAX if it cannot carry load itself.
+
+    Distance and capacity must agree on what counts as material (DENSITY_HALF).
+    Sub-half voxels (spray dust, the growing surface, rebar spray shadows) must
+    neither conduct distance nor leave readable stale values: capacity cannot flow
+    through them, so any distance path they conduct -- e.g. a rebar bar radiating its
+    anchor distance through the dust in front of the growing deposit -- orders the
+    field against the real support chains, and the strictly-increasing gate in
+    capacity_propagation then starves genuinely attached material.
+    """
+    return wp.where(total_density_is_smaller(wet, dry, DENSITY_HALF), DISTANCE_MAX, saturating_add(distance, cost))
+
+
 @wp.kernel
 def update_distances_kernel(
     wet: wp.array4d(dtype=wp.uint8),
@@ -89,21 +104,47 @@ def update_distances_kernel(
         distance[widx, pos[0], pos[1], pos[2]] = wp.min(
             distance[widx, pos[0], pos[1], pos[2]],
             wp.where(
-                # same occupancy threshold as the load/capacity kernels: sub-half
-                # residue must not conduct distance, or the fuzzy shell left floating
-                # by a drop-down keeps stale near-anchor distances alive in the void
-                # and material rebuilt onto it inherits them, starving its capacity
                 total_density_is_smaller(
                     wet[widx, pos[0], pos[1], pos[2]], dry[widx, pos[0], pos[1], pos[2]], DENSITY_HALF
                 ),
                 DISTANCE_MAX,
                 min_six_way(
-                    saturating_add(distance[widx, pos[0] + 1, pos[1], pos[2]], wp.uint8(2)),
-                    saturating_add(distance[widx, pos[0] - 1, pos[1], pos[2]], wp.uint8(2)),
-                    saturating_add(distance[widx, pos[0], pos[1] + 1, pos[2]], wp.uint8(2)),
-                    saturating_add(distance[widx, pos[0], pos[1] - 1, pos[2]], wp.uint8(2)),
-                    saturating_add(distance[widx, pos[0], pos[1], pos[2] + 1], wp.uint8(5)),
-                    saturating_add(distance[widx, pos[0], pos[1], pos[2] - 1], wp.uint8(1)),
+                    structural_distance(
+                        wet[widx, pos[0] + 1, pos[1], pos[2]],
+                        dry[widx, pos[0] + 1, pos[1], pos[2]],
+                        distance[widx, pos[0] + 1, pos[1], pos[2]],
+                        wp.uint8(2),
+                    ),
+                    structural_distance(
+                        wet[widx, pos[0] - 1, pos[1], pos[2]],
+                        dry[widx, pos[0] - 1, pos[1], pos[2]],
+                        distance[widx, pos[0] - 1, pos[1], pos[2]],
+                        wp.uint8(2),
+                    ),
+                    structural_distance(
+                        wet[widx, pos[0], pos[1] + 1, pos[2]],
+                        dry[widx, pos[0], pos[1] + 1, pos[2]],
+                        distance[widx, pos[0], pos[1] + 1, pos[2]],
+                        wp.uint8(2),
+                    ),
+                    structural_distance(
+                        wet[widx, pos[0], pos[1] - 1, pos[2]],
+                        dry[widx, pos[0], pos[1] - 1, pos[2]],
+                        distance[widx, pos[0], pos[1] - 1, pos[2]],
+                        wp.uint8(2),
+                    ),
+                    structural_distance(
+                        wet[widx, pos[0], pos[1], pos[2] + 1],
+                        dry[widx, pos[0], pos[1], pos[2] + 1],
+                        distance[widx, pos[0], pos[1], pos[2] + 1],
+                        wp.uint8(5),
+                    ),
+                    structural_distance(
+                        wet[widx, pos[0], pos[1], pos[2] - 1],
+                        dry[widx, pos[0], pos[1], pos[2] - 1],
+                        distance[widx, pos[0], pos[1], pos[2] - 1],
+                        wp.uint8(1),
+                    ),
                 ),
             ),
         )
@@ -140,12 +181,24 @@ def global_update_distances_kernel(
         distance[widx, ii, j, kk] = wp.min(
             distance[widx, ii, j, kk],
             min_six_way(
-                saturating_add(distance[widx, ii + 1, j, kk], wp.uint8(2)),
-                saturating_add(distance[widx, ii - 1, j, kk], wp.uint8(2)),
-                saturating_add(distance[widx, ii, j + 1, kk], wp.uint8(2)),
-                saturating_add(distance[widx, ii, j - 1, kk], wp.uint8(2)),
-                saturating_add(distance[widx, ii, j, kk + 1], wp.uint8(5)),
-                saturating_add(distance[widx, ii, j, kk - 1], wp.uint8(1)),
+                structural_distance(
+                    wet[widx, ii + 1, j, kk], dry[widx, ii + 1, j, kk], distance[widx, ii + 1, j, kk], wp.uint8(2)
+                ),
+                structural_distance(
+                    wet[widx, ii - 1, j, kk], dry[widx, ii - 1, j, kk], distance[widx, ii - 1, j, kk], wp.uint8(2)
+                ),
+                structural_distance(
+                    wet[widx, ii, j + 1, kk], dry[widx, ii, j + 1, kk], distance[widx, ii, j + 1, kk], wp.uint8(2)
+                ),
+                structural_distance(
+                    wet[widx, ii, j - 1, kk], dry[widx, ii, j - 1, kk], distance[widx, ii, j - 1, kk], wp.uint8(2)
+                ),
+                structural_distance(
+                    wet[widx, ii, j, kk + 1], dry[widx, ii, j, kk + 1], distance[widx, ii, j, kk + 1], wp.uint8(5)
+                ),
+                structural_distance(
+                    wet[widx, ii, j, kk - 1], dry[widx, ii, j, kk - 1], distance[widx, ii, j, kk - 1], wp.uint8(1)
+                ),
             ),
         )
 
@@ -314,43 +367,12 @@ def gather_failed_kernel(
 
 
 @wp.kernel
-def failure_cooldown_kernel(
-    failed_count: wp.array(dtype=wp.int32),
-    failure_trigger: wp.array(dtype=wp.float32),
-    failure_cooldown: wp.int32,
-    cooldown_state: wp.array(dtype=wp.int32),
-    fire_scale: wp.array(dtype=wp.float32),
-):
-    """Fire the crater cut when the break surface is large enough, then rest.
-
-    The cut is all-or-nothing. An overfed face continuously sheds small patches of
-    fresh spray (a few break-surface voxels per check), and any proportional response
-    is unstable: even a small damage ball removes many times the shed's own mass of
-    healthy supported deposit, which re-exposes fresh weak surface, which sheds again
-    at the next check -- craters then re-fire forever and the surface can never build
-    back up. So below ``failure_trigger`` break-surface voxels nothing fires and the
-    shed simply drips off; at or above it -- a genuine structural collapse -- the full
-    crater is carved and a cooldown of ``failure_cooldown`` checks arms during which
-    the cut stays suppressed, letting the aftershocks shed as plain drop-downs.
-    """
-    widx = wp.tid()
-    if cooldown_state[widx] > 0:
-        cooldown_state[widx] = cooldown_state[widx] - 1
-        fire_scale[widx] = 0.0
-        return
-    if wp.float32(failed_count[widx]) >= failure_trigger[widx]:
-        fire_scale[widx] = 1.0
-        cooldown_state[widx] = failure_cooldown
-    else:
-        fire_scale[widx] = 0.0
-
-
-@wp.kernel
 def failure_ball_damage_kernel(
     wet: wp.array4d(dtype=wp.uint8),
     dry: wp.array4d(dtype=wp.uint8),
     failed_count: wp.array(dtype=wp.int32),
     failed_positions: wp.array2d(dtype=wp.vec3i),
+    failure_trigger: wp.array(dtype=wp.float32),
     failure_damage: wp.array(dtype=wp.float32),
     failure_damage_decay: wp.array(dtype=wp.float32),
     ball: wp.array(dtype=wp.vec3i),
@@ -358,19 +380,21 @@ def failure_ball_damage_kernel(
 ):
     """Project a radially decaying damage ball around every just-failed voxel.
 
-    Each stored failure site casts ``peak - |offset| * failure_damage_decay`` onto the
-    occupied voxels of the surrounding ball, with ``peak = failure_damage * fire_scale``
-    as decided by :func:`failure_cooldown_kernel`: a genuine collapse carves the full
-    crater of radius ~``failure_damage / failure_damage_decay`` while stray rim voxels
-    and drips barely scratch the deposit, letting the surface build back up.
-    Overlapping balls combine by maximum (not sum) so clustered failure sites do not
-    multiply the damage.
+    The cut fires only when the break surface reaches ``failure_trigger`` voxels:
+    an overfed face routinely sheds single voxels of fresh spray every check, and
+    ungated each of those would carve a full-radius crater through the healthy
+    deposit around it. At or above the trigger -- a genuine structural collapse --
+    every stored site casts ``failure_damage - |offset| * failure_damage_decay`` onto
+    the material in the surrounding ball (crater radius at most
+    ``failure_damage / failure_damage_decay``). Overlapping balls combine by maximum
+    (not sum) so clustered failure sites do not multiply the damage.
     """
     j, i, widx = wp.tid()
+    if wp.float32(failed_count[widx]) < failure_trigger[widx]:
+        return
     if i >= failed_count[widx]:
         return
-    peak = failure_damage[widx]
-    dmg = peak - wp.length(wp.vec3f(ball[j])) * failure_damage_decay[widx]
+    dmg = failure_damage[widx] - wp.length(wp.vec3f(ball[j])) * failure_damage_decay[widx]
     if dmg <= 0.0:
         return
     pos = failed_positions[widx, i] + ball[j]
