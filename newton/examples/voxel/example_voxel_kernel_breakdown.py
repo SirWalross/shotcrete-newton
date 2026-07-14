@@ -133,6 +133,7 @@ class Example:
 
         # attribute this step's new timer entries to their stages
         timings = self.solver.timing_dict
+        print(timings)
         for section, stage in STAGE_OF_SECTION.items():
             values = timings.get(section, [])
             new = values[self.consumed[section] :]
@@ -146,7 +147,7 @@ class Example:
 
     def report(self):
         self.reported = True
-        times = self.stage_times[10: self.sim_step]
+        times = self.stage_times[10 : self.sim_step]
         mean = times.mean(axis=0)
         total = mean.sum()
 
@@ -196,9 +197,7 @@ class Example:
         ax.set_xlim(-0.5, times.shape[0] - 0.5)
         ax.set_xlabel("simulation step")
         ax.set_ylabel("time per step [ms]")
-        ax.set_title(
-            "Step time by pipeline stage"
-        )
+        ax.set_title("Step time by pipeline stage")
         ax.grid(axis="x", visible=False)
         ax.legend(ncols=3, loc="upper left", columnspacing=1.2)
         ax.set_ylim(0, 1.35 * bottom.max())

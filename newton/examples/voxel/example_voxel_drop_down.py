@@ -243,7 +243,7 @@ class Example:
             base_gy = wall_j - round(nozzle_distance / VOXEL_SIZE)
             assert base_gy >= 2, "grid too shallow for the requested nozzle distance"
             nozzle_grid = (GRID_X // 2, base_gy, GRID_Z // 2)
-            nozzle_dir = np.array([0.0, 0.9, -0.02])
+            nozzle_dir = np.array([0.0, 0.9, -0.01])
             nozzle_dir = nozzle_dir / np.linalg.norm(nozzle_dir)
 
         nozzle = newton.ModelBuilder()
@@ -289,7 +289,7 @@ class Example:
             # than the bare wall; transparent bars stay inert until the wall deposit
             # engulfs them and only then anchor it from inside
             alpha=0.0,
-            use_bounding_boxes=False,
+            use_bounding_boxes=True,
             sigma=0.5,
         )
         # bar axis sits rebar_cover meters in front of the wall face; with --rebar the
@@ -642,7 +642,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--failure-damage",
         type=float,
-        default=1200.0,
+        default=2000.0,
         help="Peak load damage cast around just-failed voxels (0 disables the crater cut).",
     )
     parser.add_argument(
@@ -654,7 +654,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--failure-trigger",
         type=float,
-        default=20.0,
+        default=30.0,
         help="Minimum break-surface size (snapped-off voxels) for the crater cut to fire; smaller sheds "
         "(fresh spray dripping off the face) fall without carving anything.",
     )

@@ -34,12 +34,11 @@ from .kernels import (
     DISTANCE_ZERO,
     LOAD_ZERO,
     SPRAY_COUNT,
-    apply_failure_damage_kernel,
     capacity_propagation_kernel,
     drip_kernel,
     drop_down_kernel,
     expand_global_bbox_kernel,
-    failure_ball_damage_kernel,
+    failure_crater_kernel,
     gather_failed_kernel,
     initialize_load_kernel,
     out_of_bounds_spray_kernel,
@@ -120,13 +119,12 @@ class SolverVoxel(SolverBase):
         flow_cutoff: float = 1.3,
         anisotropic_distance_weight: float = 2.8,
         shear_strength: float = 3.0,
-        adhesion_strength: float = 1.0,
-        compression_strength: float = 40.0,
+        adhesion_strength: float = 1.8,
+        compression_strength: float = 80.0,
         wet_strength_penalty: float = 0.6,
-        failure_damage: float = 0.0,
-        failure_damage_decay: float = 100.0,
-        failure_trigger: float = 2.0,
-        max_failure_sites: int = 1024,
+        failure_damage: float = 2000.0,
+        failure_damage_decay: float = 50.0,
+        failure_trigger: float = 30.0,
         capacity_iterations: int = 4,
         debug_mode: bool = False,
         adhesion_check_freq: int = 10,
@@ -219,12 +217,14 @@ class SolverVoxel(SolverBase):
         if self.apply_failure_damage:
             # ball offsets for the crater cut; the radius is fixed at init from the
             # scalar failure parameters (per-world updates via update_parameters can
-            # rescale the damage but not enlarge the ball)
-            failure_radius = int(np.ceil(failure_damage / failure_damage_decay))
+            # rescale the damage but not enlarge the ball). Clamped to the largest
+            # grid dimension: a bigger ball cannot reach anything anyway, and an
+            # accidental damage/decay ratio in the hundreds would silently allocate
+            # a multi-gigabyte offset table.
+            failure_radius = min(int(np.ceil(failure_damage / failure_damage_decay)), max(self.shape[1:]))
             self.failure_ball_indices = wp.array(get_sphere_indices(failure_radius), dtype=wp.vec3i)
-            self.failed_positions = wp.zeros((self.shape[0], max_failure_sites), dtype=wp.vec3i)
             self.failed_count = wp.zeros((self.shape[0],), dtype=wp.int32)
-            self.failure_damage_field = wp.zeros(self.shape, dtype=wp.int32)
+            self.failed_position_sum = wp.zeros((self.shape[0],), dtype=wp.vec3i)
         # Per-world lidar occlusion radius (m); 0 disables occlusion (occluded view == clean view).
         self.occlusion_distance = wp.full((self.shape[0],), occlusion_distance, dtype=wp.float32)
 
@@ -802,30 +802,6 @@ class SolverVoxel(SolverBase):
 
     def adhesion_check(self, rewards: VoxelRewards):
         self._compute_loads()
-        load = wp.to_torch(self.model.voxel_load).cpu().numpy()
-        distance = wp.to_torch(self.model.voxel_distance).cpu().numpy()
-        wet = wp.to_torch(self.model.voxel_wet).cpu().numpy()
-        dry = wp.to_torch(self.model.voxel_dry).cpu().numpy()
-        index = np.argwhere(load < 0)
-        if index.shape[0] > 0:
-            # get indices of the six surrounding voxels for each failed voxel
-            indices = []
-            for i in range(-1, 2):
-                for j in range(-1, 2):
-                    for k in range(-1, 2):
-                        if abs(i) + abs(j) + abs(k) == 1:
-                            indices.append(index[0] + np.array([0, i, j, k]))
-            indices = np.array(indices)
-            print("Failed voxel indices:", index)
-            for idx in indices:
-                print("Surrounding voxel indices:", idx)
-                print("Failed voxel load values:", load[tuple(idx)])
-                print("Failed voxel distance values:", distance[tuple(idx)])
-                print("Failed voxel wet values:", wet[tuple(idx)])
-                print("Failed voxel dry values:", dry[tuple(idx)])
-        print(load[load < 0])
-        print(distance[load < 0])
-        print(wet[load < 0] + dry[load < 0])
         with wp.ScopedTimer(
             "drop down",
             active=self.active,
@@ -842,14 +818,14 @@ class SolverVoxel(SolverBase):
                 print=self.print_timings,
                 dict=self.timing_dict,
             ):
-                # crater cut: gather the break surface of the drop-down (failed voxels
-                # that snapped off still-standing material; falling disconnected
-                # chunks seed nothing), cast a radially decaying damage ball around
-                # each site (peak scaled by the break-surface size), subtract the
-                # strongest overlapping ball from the load field, and let a single
-                # final drop-down remove every voxel whose capacity went negative
+                # crater cut: measure the break surface of the drop-down (failed
+                # voxels that snapped off still-standing material; falling
+                # disconnected chunks count nothing), and if it reaches the trigger,
+                # subtract one radially decaying damage ball around its centroid from
+                # the load field; the final drop-down then removes every voxel whose
+                # capacity went negative
                 self.failed_count.zero_()
-                self.failure_damage_field.zero_()
+                self.failed_position_sum.zero_()
                 wp.launch(
                     gather_failed_kernel,
                     dim=(self.shape[0], self.shape[1] - 2, self.shape[2] - 2),
@@ -859,49 +835,24 @@ class SolverVoxel(SolverBase):
                         self.model.voxel_load,
                         self.spray_bbox,
                     ],
-                    outputs=[self.failed_count, self.failed_positions],
+                    outputs=[self.failed_count, self.failed_position_sum],
                 )
-                print(wp.to_torch(self.failed_count))
-                print(wp.to_torch(self.failed_positions))
                 wp.launch(
-                    failure_ball_damage_kernel,
-                    dim=(self.failure_ball_indices.shape[0], self.failed_positions.shape[1], self.shape[0]),
+                    failure_crater_kernel,
+                    dim=(self.failure_ball_indices.shape[0], self.shape[0]),
                     inputs=[
-                        self.model.voxel_wet,
-                        self.model.voxel_dry,
                         self.failed_count,
-                        self.failed_positions,
+                        self.failed_position_sum,
                         self.failure_trigger,
                         self.failure_damage,
                         self.failure_damage_decay,
                         self.failure_ball_indices,
-                    ],
-                    outputs=[self.failure_damage_field],
-                )
-                wp.launch(
-                    apply_failure_damage_kernel,
-                    dim=self.shape,
-                    inputs=[
-                        self.failure_damage_field,
                         self.model.voxel_wet,
                         self.model.voxel_dry,
                         self.model.voxel_distance,
                     ],
                     outputs=[self.model.voxel_load, rewards.adhesion_failure_amount],
                 )
-                self._drop_down(rewards)
-            with wp.ScopedTimer(
-                "failure cleanup",
-                active=self.active,
-                synchronize=self.synchronize,
-                print=self.print_timings,
-                dict=self.timing_dict,
-            ):
-                # the crater cut changed the geometry after loads were computed:
-                # re-evaluate support on the new geometry and drop whatever the cut
-                # severed within the same event, so it does not surface as a fresh
-                # failure (re-triggering a full crater) at the next check
-                self._compute_loads()
                 self._drop_down(rewards)
 
     def update_rebound_distances(self):

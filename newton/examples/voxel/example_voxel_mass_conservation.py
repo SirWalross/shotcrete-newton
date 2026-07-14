@@ -142,7 +142,7 @@ class Example:
             deposit_env_first=env_first,
             # exact per-event sprayed mass, read back instead of re-deriving the fit
             record_generated_mass=True,
-            backtrack_count=10,
+            backtrack_count=5,
         )
         world_indices = wp.array(np.arange(NUM_WORLDS), dtype=wp.int32, device=self.device)
         solver.reset(state_0, world_indices)
