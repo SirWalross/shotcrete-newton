@@ -990,26 +990,26 @@ class SolverVoxel(SolverBase):
             )
             if self.redistribution:
                 self.avg_ray_index.zero_()
-                # wp.launch(kernel=sum_kernel, dim=(self.shape[0], self.k), inputs=[self.ray_indices, self.avg_ray_index])
-                # wp.launch(
-                #     respreading_kernel,
-                #     dim=(self.respreading_backtracking_amount, self.k, self.shape[0]),
-                #     inputs=[
-                #         self.model.voxel_wet,
-                #         self.model.voxel_dry,
-                #         self.sigma,
-                #         self.ray_indices,
-                #         self.positions,
-                #         self.directions,
-                #         self.speed_distribution,
-                #         LINEAR_SPACING,
-                #         self.avg_ray_index,
-                #         self.droplet_mass,
-                #         self.h,
-                #         self.k,
-                #     ],
-                #     outputs=[],
-                # )
+                wp.launch(kernel=sum_kernel, dim=(self.shape[0], self.k), inputs=[self.ray_indices, self.avg_ray_index])
+                wp.launch(
+                    respreading_kernel,
+                    dim=(self.respreading_backtracking_amount, self.k, self.shape[0]),
+                    inputs=[
+                        self.model.voxel_wet,
+                        self.model.voxel_dry,
+                        self.sigma,
+                        self.ray_indices,
+                        self.positions,
+                        self.directions,
+                        self.speed_distribution,
+                        LINEAR_SPACING,
+                        self.avg_ray_index,
+                        self.droplet_mass,
+                        self.h,
+                        self.k,
+                    ],
+                    outputs=[],
+                )
             wp.launch(
                 spray_backtrack_kernel,
                 dim=(self.shape[0], self.k, self.backtrack_count),
