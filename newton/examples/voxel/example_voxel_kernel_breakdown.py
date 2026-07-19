@@ -179,13 +179,17 @@ class Example:
             return
 
         _plot_style.setup(plt)
+        # solidify is omitted from the figure: it never rises above ~0.05 ms per step.
+        # The remaining stages take the shared series palette in order (bottom to top).
+        stages = [s for s in STAGES if s != "solidify"]
         fig, ax = plt.subplots(figsize=(5.4, 3.0))
         steps = np.arange(times.shape[0])
         bottom = np.zeros(times.shape[0])
-        for s, stage in enumerate(STAGES):
+        for s, stage in enumerate(stages):
+            values = times[:, STAGES.index(stage)]
             ax.bar(
                 steps,
-                times[:, s],
+                values,
                 bottom=bottom,
                 width=1.0,
                 color=_plot_style.SERIES[s],
@@ -193,11 +197,10 @@ class Example:
                 edgecolor="white",
                 label=stage,
             )
-            bottom += times[:, s]
+            bottom += values
         ax.set_xlim(-0.5, times.shape[0] - 0.5)
         ax.set_xlabel("simulation step")
         ax.set_ylabel("time per step [ms]")
-        ax.set_title("Step time by pipeline stage")
         ax.grid(axis="x", visible=False)
         ax.legend(ncols=3, loc="upper left", columnspacing=1.2)
         ax.set_ylim(0, 1.35 * bottom.max())

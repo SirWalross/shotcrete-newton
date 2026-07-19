@@ -133,7 +133,7 @@ class Example:
                     solver.step(state_0, state_1, control, None, rewards, self.frame_dt)
                     solver.step(state_1, state_0, control, None, rewards, self.frame_dt)
                 graph = capture.graph
-            except Exception as exc:  # noqa: BLE001 -- capture support depends on driver/toolkit
+            except Exception as exc:
                 return None, f"graph capture failed: {exc}"
             wp.capture_launch(graph)  # graph warm-up
             wp.synchronize()
@@ -235,13 +235,9 @@ class Example:
                     )
             ax.set_ylabel("solver steps/s")
             ax.set_ylim(0, 1.3 * max(values))
-            ax.set_title(f"{num_envs} environments")
+            ax.set_xlabel(f"{num_envs} environments")
             ax.grid(axis="x", visible=False)
             ax.tick_params(axis="x", labelsize=7.0)
-        fig.suptitle(
-            "Optimization ablations",
-            fontsize=9.5,
-        )
         fig.tight_layout()
         fig.savefig("voxel_ablations.pdf")
         plt.close(fig)

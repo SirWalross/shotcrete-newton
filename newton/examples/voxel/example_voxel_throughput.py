@@ -268,7 +268,6 @@ class Example:
         ax.set_xticks(envs, labels=[str(int(e)) for e in envs])
         ax.set_xlabel("parallel environments")
         ax.set_ylabel("throughput [1/s]")
-        ax.set_title("Voxel solver throughput")
         ax.legend(loc="lower left")
         fig.savefig("voxel_throughput.pdf")
         plt.close(fig)

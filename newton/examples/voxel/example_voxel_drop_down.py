@@ -46,8 +46,13 @@ deposit outgrows its load envelope and the cycle repeats.
 Every step the exposed deposit surface is extracted on the GPU (a voxel is rendered
 iff its total density reaches the occupancy threshold and at least one of its six
 neighbours does not) and drawn as per-voxel cubes: rebar in rusty steel, shotcrete
-shaded from dry beige to wet brown by its wet-mass fraction; wall and floor are drawn
-as flat slabs. A fixed camera watches the spray spot from the side.
+shaded from dry beige to wet brown by its wet-mass fraction, then darkened by a
+neighbourhood-occupancy ambient-occlusion term (crevices and craters read as depth)
+and broken up by a deterministic per-voxel brightness jitter (concrete texture
+instead of flat plastic). Wall and floor are drawn as oversized slabs, the nozzle as
+a steel cone with its supply hose, and the active spray as a few faint core lines
+plus short droplet streaks scattered through the spray cone. A fixed camera frames
+the nozzle, the deposit and the floor where failed material lands.
 
 The failure moment is detected through ``rewards.adhesion_failure_amount`` (the mass
 that detached this step). Rendered frames are kept in a ring buffer at one capture
@@ -55,9 +60,13 @@ per adhesion check, and once the failure fires the 5 frames before it, the failu
 frame itself, and the 4 following captures are written as PNG images (10 total).
 
 For every captured frame a diagnostic figure of the central y-z plane
-(``slice_*.png``) is written alongside: the load-capacity field ``voxel_load``
-(diverging map, red = overloaded, fails when negative) and the distance-to-support
-field ``voxel_distance`` (sequential map), with sub-threshold voxels masked out.
+(``slice_*.png``) is written alongside, all panels oriented z up with the wall at the
+right: the load-capacity field ``voxel_load`` (diverging map centered at zero,
+blue = spare capacity in full-voxel equivalents, red = failing), the
+distance-to-support field ``voxel_distance`` (sequential map over the full uint8
+range, sqrt-scaled, stale ``DISTANCE_MAX`` voxels flagged orange) and the total
+density ``wet + dry`` (sequential grays). Sub-threshold voxels are masked out of the
+load and distance panels.
 
 Frame capture needs the OpenGL viewer (``--viewer gl``, optionally ``--headless``);
 with ``--viewer null`` the episode still runs, validates the failure detection, and
@@ -113,22 +122,41 @@ REBAR_OFFSET = 20  # first bar position (voxels), centers the 8x8 mesh on the sp
 DENSITY_HALF = 128
 DENSITY_REBAR = 254
 
-COLOR_WALL = wp.vec3(0.58, 0.58, 0.60)
-COLOR_FLOOR = wp.vec3(0.42, 0.42, 0.44)
-COLOR_REBAR = wp.constant(wp.vec3(0.50, 0.27, 0.19))
-COLOR_DRY = wp.constant(wp.vec3(0.76, 0.74, 0.70))
-COLOR_WET = wp.constant(wp.vec3(0.44, 0.41, 0.37))
+# the viewer's sun term is ``albedo * 3 * NdotL``: keep the sunlit albedos below ~0.65
+# or lit faces clip to white and the deposit loses all shape
+COLOR_WALL = wp.vec3(0.52, 0.51, 0.49)
+COLOR_FLOOR = wp.vec3(0.42, 0.41, 0.39)
+COLOR_STEEL = wp.vec3(0.30, 0.31, 0.34)
+COLOR_SPRAY = wp.vec3(0.80, 0.78, 0.73)
+COLOR_REBAR = wp.constant(wp.vec3(0.40, 0.23, 0.15))
+COLOR_DRY = wp.constant(wp.vec3(0.58, 0.56, 0.51))
+COLOR_WET = wp.constant(wp.vec3(0.28, 0.25, 0.21))
+
+# instance materials: (roughness, metallic, checker, unused); the viewer default is
+# glossy metal, which gives concrete a plastic sheen
+MAT_CONCRETE = wp.vec4(0.85, 0.0, 0.0, 0.0)
+MAT_STEEL = wp.vec4(0.4, 0.8, 0.0, 0.0)
+
+# background gradient, which doubles as the hemispherical ambient term: soft daylight
+# instead of the viewer's dark navy default (which tints the whole scene blue)
+SKY_UPPER = (0.63, 0.69, 0.80)
+SKY_LOWER = (0.34, 0.32, 0.29)
 
 
-def quat_from_x_to(direction: np.ndarray) -> wp.quat:
-    """Quaternion rotating the +x axis onto ``direction`` (unit vector)."""
-    x_axis = np.array([1.0, 0.0, 0.0])
-    d = direction / np.linalg.norm(direction)
-    axis = np.cross(x_axis, d)
+def quat_from_to(src, dst) -> wp.quat:
+    """Quaternion rotating unit vector ``src`` onto unit vector ``dst``."""
+    a = np.asarray(src, dtype=np.float64)
+    b = np.asarray(dst, dtype=np.float64)
+    axis = np.cross(a, b)
     s = np.linalg.norm(axis)
-    c = float(np.dot(x_axis, d))
+    c = float(np.dot(a, b))
     if s < 1.0e-12:
-        return wp.quat_identity() if c > 0.0 else wp.quat(0.0, 0.0, 1.0, 0.0)
+        if c > 0.0:
+            return wp.quat_identity()
+        perp = np.cross(a, [0.0, 0.0, 1.0])  # 180 degrees: any axis perpendicular to src
+        if np.linalg.norm(perp) < 1.0e-6:
+            perp = np.cross(a, [0.0, 1.0, 0.0])
+        return wp.quat(*(perp / np.linalg.norm(perp)), 0.0)
     axis = axis / s
     half = 0.5 * np.arctan2(s, c)
     return wp.quat(*(np.sin(half) * axis), np.cos(half))
@@ -188,11 +216,25 @@ def extract_surface_kernel(
         (wp.float32(k) + 0.5) * h,
     )
     xforms[idx] = wp.transform(p, wp.quat_identity())
+    # crevice shading: occupancy of the 26-neighbourhood as a cheap ambient-occlusion
+    # term (a flat patch sits near 18, ridges lower, pit bottoms near 26), plus a
+    # deterministic per-voxel brightness jitter so the deposit reads as concrete
+    # instead of flat plastic (hashed from the voxel index, so it does not flicker)
+    occ = int(0)
+    for di in range(-1, 2):
+        for dj in range(-1, 2):
+            for dk in range(-1, 2):
+                if occupied(wet, dry, i + di, j + dj, k + dk):
+                    occ += 1
+    ao = wp.clamp(wp.float32(occ - 14) / 12.0, 0.0, 1.0)
+    rng = wp.rand_init(1337, (i * 1009 + j) * 1013 + k)
+    shade = (1.12 - 0.55 * ao) * (0.94 + 0.12 * wp.randf(rng))
     if w == DENSITY_REBAR and d == DENSITY_REBAR:
-        colors[idx] = COLOR_REBAR
+        colors[idx] = COLOR_REBAR * shade
     else:
-        wet_frac = wp.float32(w) / wp.float32(wp.max(w + d, 1))
-        colors[idx] = COLOR_DRY + (COLOR_WET - COLOR_DRY) * wet_frac
+        # sqrt emphasis: even a thin wet film on a cured face shows as a darker patch
+        wet_frac = wp.sqrt(wp.float32(w) / wp.float32(wp.max(w + d, 1)))
+        colors[idx] = (COLOR_DRY + (COLOR_WET - COLOR_DRY) * wet_frac) * shade
 
 
 class Example:
@@ -249,10 +291,11 @@ class Example:
         nozzle = newton.ModelBuilder()
         # the solver looks up the TCP body via the `/World/envs/env_*/<name>` USD-style key
         body = nozzle.add_body(xform=wp.transform_identity(), key="/World/envs/env_0/nozzle", mass=1.0)
-        nozzle.add_shape_sphere(body, radius=0.02)
+        # hidden: the nozzle is drawn as static scenery (steel cone + hose) instead
+        nozzle.add_shape_sphere(body, radius=0.02, cfg=newton.ModelBuilder.ShapeConfig(is_visible=False))
 
         builder = newton.ModelBuilder()
-        xform = wp.transform(grid_to_world(*nozzle_grid), quat_from_x_to(nozzle_dir))
+        xform = wp.transform(grid_to_world(*nozzle_grid), quat_from_to((1.0, 0.0, 0.0), nozzle_dir))
         builder.add_world(nozzle, xform=xform)
         self.model = builder.finalize()
 
@@ -316,47 +359,127 @@ class Example:
         self.max_instances = 300_000
         self.surf_xforms = wp.empty(self.max_instances, dtype=wp.transform, device=self.device)
         self.surf_colors = wp.empty(self.max_instances, dtype=wp.vec3, device=self.device)
+        self.surf_materials = wp.full(self.max_instances, MAT_CONCRETE, dtype=wp.vec4, device=self.device)
         self.surf_count = wp.zeros(1, dtype=wp.int32, device=self.device)
         self.capacity_warned = False
 
-        # static wall and floor slabs (world-space extents of the corresponding grid slabs)
-        half_x = GRID_X // 2 * VOXEL_SIZE
-        self.wall_slab = (
-            (half_x, VOXEL_SIZE, GRID_Z / 2 * VOXEL_SIZE),
-            wp.array(
-                [wp.transform(wp.vec3(0.0, (GRID_Y - 1) * VOXEL_SIZE, GRID_Z / 2 * VOXEL_SIZE), wp.quat_identity())],
-                dtype=wp.transform,
+        # static scenery, logged once per frame: wall/floor slabs oversized well past
+        # the voxel grid so the frame never ends at a floating card edge, plus the
+        # nozzle (steel cone with its supply hose) aligned with the spray direction
+        matte = wp.array([MAT_CONCRETE], dtype=wp.vec4)
+        steel = wp.array([MAT_STEEL], dtype=wp.vec4)
+
+        def static_shape(name, geo_type, scale, pos, rot, color, material):
+            return (
+                name,
+                geo_type,
+                scale,
+                wp.array([wp.transform(wp.vec3(*pos), rot)], dtype=wp.transform),
+                wp.array([color], dtype=wp.vec3),
+                material,
+            )
+
+        ident = wp.quat_identity()
+        wall_y = (GRID_Y - 1) * VOXEL_SIZE
+        wall_center_z = GRID_Z / 2 * VOXEL_SIZE
+        self.static_shapes = [
+            static_shape(
+                "/wall",
+                newton.GeoType.BOX,
+                (4.0, VOXEL_SIZE, 2.0),
+                (0.0, wall_y, wall_center_z),
+                ident,
+                COLOR_WALL,
+                matte,
             ),
-            wp.array([COLOR_WALL], dtype=wp.vec3),
-        )
-        self.floor_slab = (
-            (half_x, GRID_Y / 2 * VOXEL_SIZE, VOXEL_SIZE / 2),
-            wp.array(
-                [wp.transform(wp.vec3(0.0, GRID_Y / 2 * VOXEL_SIZE, VOXEL_SIZE / 2), wp.quat_identity())],
-                dtype=wp.transform,
+            static_shape(
+                "/floor",
+                newton.GeoType.BOX,
+                (4.0, 2.0, VOXEL_SIZE / 2),
+                (0.0, 0.15, VOXEL_SIZE / 2),
+                ident,
+                COLOR_FLOOR,
+                matte,
             ),
-            wp.array([COLOR_FLOOR], dtype=wp.vec3),
-        )
-        self.slabs = [("/wall", self.wall_slab), ("/floor", self.floor_slab)]
+        ]
         if overhead:
-            self.slabs.append(
-                (
+            self.static_shapes.append(
+                static_shape(
                     "/ceiling",
-                    (
-                        (half_x, GRID_Y / 2 * VOXEL_SIZE, VOXEL_SIZE),
-                        wp.array(
-                            [
-                                wp.transform(
-                                    wp.vec3(0.0, GRID_Y / 2 * VOXEL_SIZE, (GRID_Z - 1) * VOXEL_SIZE),
-                                    wp.quat_identity(),
-                                )
-                            ],
-                            dtype=wp.transform,
-                        ),
-                        wp.array([COLOR_WALL], dtype=wp.vec3),
-                    ),
+                    newton.GeoType.BOX,
+                    (4.0, 2.0, VOXEL_SIZE),
+                    (0.0, 0.15, (GRID_Z - 1) * VOXEL_SIZE),
+                    ident,
+                    COLOR_WALL,
+                    matte,
                 )
             )
+
+        nozzle_pos = np.array(grid_to_world(*nozzle_grid))
+        tip_q = quat_from_to((0.0, 0.0, 1.0), nozzle_dir)  # cone/cylinder meshes extend along +z
+        self.static_shapes.append(
+            static_shape(
+                "/nozzle_tip",
+                newton.GeoType.CONE,
+                (0.02, 0.04),
+                nozzle_pos + 0.01 * nozzle_dir,
+                tip_q,
+                COLOR_STEEL,
+                steel,
+            )
+        )
+        self.static_shapes.append(
+            static_shape(
+                "/nozzle_hose",
+                newton.GeoType.CYLINDER,
+                (0.013, 0.10),
+                nozzle_pos - 0.13 * nozzle_dir,
+                tip_q,
+                COLOR_STEEL,
+                steel,
+            )
+        )
+
+        # spray jet: a few faint core lines from the nozzle tip to the spray spot plus
+        # short droplet streaks scattered through the spray cone; the deposit occludes
+        # them where it has grown, so the visible jet shortens as the layer thickens
+        rng = np.random.default_rng(7)  # decorative only: keeps the solver's np.random stream untouched
+        tip = nozzle_pos + 0.05 * nozzle_dir
+        span = nozzle_distance - 0.05
+        u = np.cross(nozzle_dir, [0.0, 0.0, 1.0])
+        if np.linalg.norm(u) < 1.0e-6:  # overhead mode sprays along +z
+            u = np.array([1.0, 0.0, 0.0])
+        u = u / np.linalg.norm(u)
+        v = np.cross(nozzle_dir, u)
+        z_axis = (0.0, 0.0, 1.0)
+        core_xforms = []
+        for a in np.linspace(0.0, 2.0 * np.pi, 5, endpoint=False):
+            ray = span * nozzle_dir + 0.02 * (np.cos(a) * u + np.sin(a) * v)
+            core_xforms.append(
+                wp.transform(wp.vec3(*(tip + 0.5 * ray)), quat_from_to(z_axis, ray / np.linalg.norm(ray)))
+            )
+        streak_xforms = []
+        streak_colors = []
+        for _ in range(24):
+            a = rng.uniform(0.0, 2.0 * np.pi)
+            r = 0.11 * np.sqrt(rng.uniform(0.05, 1.0))  # sqrt: uniform over the cone cross-section
+            ray = span * nozzle_dir + r * (np.cos(a) * u + np.sin(a) * v)
+            center = tip + rng.uniform(0.15, 0.9) * ray
+            streak_xforms.append(wp.transform(wp.vec3(*center), quat_from_to(z_axis, ray / np.linalg.norm(ray))))
+            streak_colors.append(wp.vec3(*(np.array(COLOR_SPRAY) * rng.uniform(0.85, 1.05))))
+        # self.jet_batches = [
+        #     (
+        #         name,
+        #         scale,
+        #         wp.array(xf, dtype=wp.transform),
+        #         wp.array(col, dtype=wp.vec3),
+        #         wp.array([MAT_CONCRETE] * len(xf), dtype=wp.vec4),
+        #     )
+        #     for name, scale, xf, col in (
+        #         ("/jet_core", (0.0008, 0.5 * span), core_xforms, [COLOR_SPRAY] * len(core_xforms)),
+        #         ("/jet_streaks", (0.0013, 0.03), streak_xforms, streak_colors),
+        #     )
+        # ]
 
         # ring-buffer capture state; entries are (step, image or None, field slices)
         self.pre_frames = collections.deque(maxlen=10)
@@ -375,18 +498,22 @@ class Example:
         self.slice_x = GRID_X // 2  # y-z diagnostic plane through the spray axis
 
         self.viewer.set_model(self.model)
-        # camera: off-axis view of the spray spot so the nozzle does not occlude it,
-        # framing both the deposit and the floor where failed material lands
+        renderer = getattr(self.viewer, "renderer", None)
+        if renderer is not None:  # ViewerGL: daylight sky/ambient instead of the dark default
+            renderer.sky_upper = SKY_UPPER
+            renderer.sky_lower = SKY_LOWER
+        # camera: off-axis view framing the whole story -- nozzle and jet, the deposit
+        # at the spray spot, and the floor where failed material lands
         if overhead:
             spot_y = GRID_Y // 2 * VOXEL_SIZE
             ceiling_z = ceiling_k * VOXEL_SIZE
-            target = np.array([0.0, spot_y, ceiling_z - 0.16])
-            pos = np.array([0.40, spot_y - 0.45, ceiling_z - 0.52])
+            target = np.array([0.0, spot_y, ceiling_z - 0.22])
+            pos = np.array([0.34, spot_y - 0.41, ceiling_z - 0.50])
         else:
-            wall_y = wall_j * VOXEL_SIZE
+            face_y = wall_j * VOXEL_SIZE
             spot_z = GRID_Z // 2 * VOXEL_SIZE
-            target = np.array([0.0, wall_y, spot_z - 0.16])
-            pos = np.array([0.34, wall_y - 0.52, spot_z + 0.10])
+            target = np.array([0.0, face_y - 0.12, spot_z - 0.06])
+            pos = np.array([0.36, face_y - 0.61, spot_z + 0.07])
         d = target - pos
         yaw = float(np.degrees(np.arctan2(d[1], d[0])))
         pitch = float(np.degrees(np.arcsin(d[2] / np.linalg.norm(d))))
@@ -418,8 +545,10 @@ class Example:
             return
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        for name, (scale, xform, color) in self.slabs:
-            self.viewer.log_shapes(name, newton.GeoType.BOX, scale, xform, color)
+        for name, geo_type, scale, xform, color, material in self.static_shapes:
+            self.viewer.log_shapes(name, geo_type, scale, xform, color, material)
+        # for name, scale, xform, color, material in self.jet_batches:
+        #     self.viewer.log_shapes(name, newton.GeoType.CYLINDER, scale, xform, color, material)
         self._log_surface_voxels()
         self.viewer.end_frame()
 
@@ -459,7 +588,12 @@ class Example:
         if n > 0:
             half = VOXEL_SIZE / 2
             self.viewer.log_shapes(
-                "/deposit", newton.GeoType.BOX, (half, half, half), self.surf_xforms[:n], self.surf_colors[:n]
+                "/deposit",
+                newton.GeoType.BOX,
+                (half, half, half),
+                self.surf_xforms[:n],
+                self.surf_colors[:n],
+                self.surf_materials[:n],
             )
 
     def _grab(self):
@@ -523,66 +657,72 @@ class Example:
         )
 
     def _save_slice_plot(self, idx: int, step: int, tag: str, slices: dict):
-        """Two-panel heatmap of the load and distance fields in the central y-z plane."""
+        """Three-panel heatmap (load, distance, density) of the central y-z plane."""
         try:
             import matplotlib  # noqa: PLC0415
-
-            # matplotlib.use("Agg")
             import matplotlib.pyplot as plt  # noqa: PLC0415
         except ImportError:
             return
 
         _plot_style.setup(plt)
 
-        # rows: z (up), cols: y (wall at the right). Sub-threshold voxels are masked so
-        # only load-bearing material shows -- except negative-load voxels, which stay
-        # visible even when already emptied: those are exactly the ones drop_down removed
+        # all panels: rows z (up), cols y (wall at the right). In the load and distance
+        # panels sub-threshold voxels are masked so only load-bearing material shows --
+        # except negative-load voxels, which stay visible even when already emptied:
+        # those are exactly the ones drop_down removed
         empty = slices["density"] < 25
-        load = np.where(empty & (slices["load"] >= 0), np.nan, slices["load"]).T
+        # capacity_propagation charges each voxel density/10 of capacity, so a full
+        # voxel (density 255) costs 25.5 units: normalize the load into the additional
+        # full voxels the support chain could still carry
+        load = np.where(empty & (slices["load"] >= 0), np.nan, slices["load"] / 25.5).T
         dist = np.where(empty, np.nan, slices["distance"]).T
+        dens = slices["density"].T
 
-        fig, axes = plt.subplots(1, 3, figsize=(9.2, 3.6), sharey=True, sharex=True)
-        cmap_load = matplotlib.colormaps["RdBu"].copy()
+        fig, axes = plt.subplots(1, 3, figsize=(10.0, 3.4), sharey=True, sharex=True, layout="constrained")
+
+        # continuous diverging map with a dark (not white) center, so the near-zero
+        # band stays visible against the gray mask: failing voxels ramp to amber,
+        # spare capacity through violet to light cyan (Crameri's managua)
+        cmap_load = matplotlib.colormaps["managua"].copy()
         cmap_load.set_bad("0.94")
         im0 = axes[0].imshow(
             load,
             origin="lower",
             cmap=cmap_load,
-            norm=matplotlib.colors.SymLogNorm(linthresh=32.0, vmin=-10.0, vmax=2550.0),
+            norm=matplotlib.colors.TwoSlopeNorm(vmin=-25.0, vcenter=0.0, vmax=50.0),
             interpolation="nearest",
         )
-        axes[0].set_title(f"load capacity (step {step})")
-        axes[0].set_xlabel("y (voxels, wall right)")
-        axes[0].set_ylabel("z (voxels)")
-        fig.colorbar(im0, ax=axes[0], label="load (negative fails)")
+        axes[0].set_title("load capacity")
+        fig.colorbar(im0, ax=axes[0], label="supportable mass")
 
+        # full uint8 range; sqrt scaling keeps structure visible near the anchors, and
+        # exactly DISTANCE_MAX (stale / unsupported voxels) is flagged in orange
         cmap_dist = matplotlib.colormaps["viridis"].copy()
         cmap_dist.set_bad("0.94")
-        cmap_dist.set_over("orangered")  # flags stale / unsupported values incl. DISTANCE_MAX
-        im1 = axes[1].imshow(dist, origin="lower", cmap=cmap_dist, vmin=0.0, vmax=64.0, interpolation="nearest")
-        axes[1].set_title(f"distance to support (step {step})")
-        axes[1].set_xlabel("y (voxels, wall right)")
-        fig.colorbar(im1, ax=axes[1], label="distance", extend="max")
-
-        cmap_dens = matplotlib.colormaps["RdBu"].copy()
-        cmap_dens.set_bad("0.94")
-        im2 = axes[2].imshow(
-            slices["density"],
+        cmap_dist.set_over("orangered")
+        im1 = axes[1].imshow(
+            dist,
             origin="lower",
-            cmap=cmap_dens,
-            norm=matplotlib.colors.SymLogNorm(linthresh=32.0, vmin=0.0, vmax=255.0),
+            cmap=cmap_dist,
+            norm=matplotlib.colors.PowerNorm(gamma=0.5, vmin=0.0, vmax=254.0),
             interpolation="nearest",
         )
-        axes[2].set_title(f"load capacity (step {step})")
-        axes[2].set_xlabel("y (voxels, wall right)")
-        axes[2].set_ylabel("z (voxels)")
-        fig.colorbar(im2, ax=axes[2], label="density")
+        axes[1].set_title("distance to support")
+        fig.colorbar(im1, ax=axes[1], label="voxels")
 
-        fig.suptitle(f"y-z slice at x = {self.slice_x}{' -- failure step' if tag else ''}")
-        fig.tight_layout()
+        # sequential grays, empty voxels white; the wall slabs (wet + dry = 510) saturate
+        im2 = axes[2].imshow(dens, origin="lower", cmap="Greys", vmin=0.0, vmax=255.0, interpolation="nearest")
+        axes[2].set_title("density (wet + dry)")
+        fig.colorbar(im2, ax=axes[2], label="voxel units")
+
+        for ax in axes:
+            ax.grid(False)
+            ax.set_xlabel("y [voxel]")
+        axes[0].set_ylabel("z [voxel]")
+
         path = os.path.join(self.output_dir, f"slice_{idx:02d}_step{step:04d}{tag}.png")
-        # plt.show()
         fig.savefig(path, dpi=200)
+        plt.close(fig)
         self.saved_slice_paths.append(path)
 
     def test_final(self):
