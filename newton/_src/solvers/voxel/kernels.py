@@ -205,20 +205,31 @@ def global_update_distances_kernel(
 
 @wp.kernel
 def initialize_load_kernel(
-    wet: wp.array4d(dtype=wp.uint8), dry: wp.array4d(dtype=wp.uint8), current_load: wp.array4d(dtype=wp.int16)
+    wet: wp.array4d(dtype=wp.uint8),
+    dry: wp.array4d(dtype=wp.uint8),
+    bbox: wp.array2d(dtype=wp.int32),
+    current_load: wp.array4d(dtype=wp.int16),
 ):
-    widx, i, j, k = wp.tid()
-    w = wet[widx, i, j, k]
-    d = dry[widx, i, j, k]
-    current_load[widx, i, j, k] = wp.where(
-        is_wall(w, d),
-        LOAD_MAX,
-        wp.where(
-            total_density_is_smaller(w, d, DENSITY_HALF),
-            wp.int16(DENSITY_ZERO),
-            -(wp.int16(w) + wp.int16(d)) / wp.int16(10),
-        ),
-    )
+    # the load field is zeroed before this kernel, and every consumer (capacity
+    # propagation, gather_failed, drop_down) filters by the same spray bbox, so
+    # voxels left at 0 outside the bbox classify the same as raw-initialized ones
+    widx, i, j = wp.tid()
+    if not in_bbox_all_height(bbox[widx], wp.vec3i(i, j, 0)):
+        return
+    for k in range(wet.shape[3]):
+        if not in_bbox(bbox[widx], wp.vec3i(i, j, k)):
+            continue
+        w = wet[widx, i, j, k]
+        d = dry[widx, i, j, k]
+        current_load[widx, i, j, k] = wp.where(
+            is_wall(w, d),
+            LOAD_MAX,
+            wp.where(
+                total_density_is_smaller(w, d, DENSITY_HALF),
+                wp.int16(DENSITY_ZERO),
+                -(wp.int16(w) + wp.int16(d)) / wp.int16(10),
+            ),
+        )
 
 
 @wp.func
@@ -266,6 +277,7 @@ def drop_down_kernel(
     distance: wp.array4d(dtype=wp.uint8),
     current_load: wp.array4d(dtype=wp.int16),
     bbox: wp.array2d(dtype=wp.int32),
+    global_bbox: wp.array2d(dtype=wp.int32),
     adhesion_failure_amount: wp.array(dtype=wp.float32),
 ):
     widx, i, j = wp.tid()
@@ -289,6 +301,10 @@ def drop_down_kernel(
             dry[widx, i, j, k] = DENSITY_ZERO
             distance[widx, i, j, k] = DISTANCE_MAX
             wet[widx, i, j, write_pos] = saturating_add(w, d)
+            # debris can land below the global bbox z-min (e.g. spray high on a wall);
+            # extend it so solidify/drip keep covering the debris pile. x/y and z-max
+            # cannot grow: debris moves straight down within already-covered columns
+            wp.atomic_min(global_bbox, widx, 2, write_pos)
             # the landing voxel must be spared (LOAD_ZERO) or the debris re-fails on
             # every subsequent pass: with write_pos == k the voxel re-deposits into
             # itself and would keep its own negative load, with write_pos below it
@@ -499,6 +515,7 @@ def drip_kernel(
     wet: wp.array4d(dtype=wp.uint8),
     dry: wp.array4d(dtype=wp.uint8),
     distance: wp.array4d(dtype=wp.uint8),
+    bbox: wp.array2d(dtype=wp.int32),
     max_z: wp.int32,
     index: wp.array(dtype=wp.int32),
     drip_vel: wp.array(dtype=wp.int32),
@@ -510,6 +527,12 @@ def drip_kernel(
 
     ii = i + 1
     jj = j + 1
+
+    # wet material only exists within the global bbox (drop-down debris included, it
+    # extends the bbox); the full z scan stays because dripping moves material down
+    # one voxel per pass and a clipped z window would let it escape over time
+    if ii < bbox[widx, 0] - 2 or ii > bbox[widx, 3] + 2 or jj < bbox[widx, 1] - 2 or jj > bbox[widx, 4] + 2:
+        return
 
     for k in range(max_z):
         w = wet[widx, ii, jj, k + 1]
@@ -1081,24 +1104,6 @@ def spray_distribution_kernel(
     density: wp.array2d(dtype=wp.float32),
     seed: wp.array(dtype=wp.int32),
 ):
-    i, widx = wp.tid()
-    deposit_droplet(wet, dry, ball_indices, voxels, remaining_mass, spray_neighbours, density, seed, widx, i)
-
-
-@wp.kernel
-def spray_distribution_env_first_kernel(
-    wet: wp.array4d(dtype=wp.uint8),
-    dry: wp.array4d(dtype=wp.uint8),
-    ball_indices: wp.array(dtype=wp.vec3i),
-    voxels: wp.array2d(dtype=wp.vec3i),
-    remaining_mass: wp.array2d(dtype=wp.float32),
-    spray_neighbours: wp.array3d(dtype=wp.float32),
-    density: wp.array2d(dtype=wp.float32),
-    seed: wp.array(dtype=wp.int32),
-):
-    """:func:`spray_distribution_kernel` with swapped launch dimensions (environment
-    index first), so droplet threads are grouped by environment. Used to measure the
-    effect of the thread-launch order on the deposition's race behaviour."""
     widx, i = wp.tid()
     deposit_droplet(wet, dry, ball_indices, voxels, remaining_mass, spray_neighbours, density, seed, widx, i)
 

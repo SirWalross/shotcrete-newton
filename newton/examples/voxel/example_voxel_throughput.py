@@ -55,7 +55,7 @@ NOZZLE_DISTANCE = 0.35  # m
 ENV_LADDER = [1, 4, 16, 64, 128, 256, 1024, 4096]
 WARMUP_STEPS = 3
 TIMED_STEPS = 200
-SIM_DT = 1.0 / 50.0  # simulated time per spray event
+SIM_DT = 0.05  # simulated time per spray event
 
 YAMAKAWA_REALTIME = 3.0  # x real-time, single CPU core (baseline from the literature)
 

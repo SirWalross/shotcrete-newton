@@ -19,10 +19,11 @@ The solver's ``collect_timings`` flag records every ScopedTimer section (with GP
 synchronization) into a dictionary. This example steps a production-sized batch and
 attributes the section timings of every step to the pipeline stages
 
-    deposition / redistribution / dripping / solidify / adhesion / rewards,
+    trajectory / re-spreading / lateral flow / deposition / dripping / solidify /
+    cohesion / rewards,
 
 printed as a per-step table and plotted as one stacked bar per step to
-``voxel_kernel_breakdown.pdf``. The adhesion check runs every 10th step and shows up
+``voxel_kernel_breakdown.pdf``. The cohesion check runs every 10th step and shows up
 as periodic spikes. Note that the synchronization needed for per-section timing
 serializes the pipeline, so the stacked totals are slightly pessimistic compared to
 free-running throughput (see the throughput example).
@@ -52,18 +53,20 @@ NUM_WORLDS = 64
 STAGE_OF_SECTION = {
     "alloca": "trajectory",
     "spray trajectory": "trajectory",
+    "spray backtrack": "trajectory",
     "spray rebound": "trajectory",
+    "spray respreading": "re-spreading",
+    "spray redistribution": "lateral flow",
     "spray deposit": "deposition",
     "spray backtrack deposit": "deposition",
     "update bbox": "deposition",
     "update global bbox": "deposition",
-    "spray redistribution": "redistribution",
     "drip": "dripping",
     "solidify": "solidify",
-    "adhesion check": "adhesion",
+    "adhesion check": "cohesion",
     "rewards": "rewards",
 }
-STAGES = ["trajectory", "deposition", "redistribution", "dripping", "solidify", "adhesion", "rewards"]
+STAGES = ["trajectory", "re-spreading", "lateral flow", "deposition", "dripping", "solidify", "cohesion", "rewards"]
 
 
 class Example:
@@ -133,7 +136,6 @@ class Example:
 
         # attribute this step's new timer entries to their stages
         timings = self.solver.timing_dict
-        print(timings)
         for section, stage in STAGE_OF_SECTION.items():
             values = timings.get(section, [])
             new = values[self.consumed[section] :]

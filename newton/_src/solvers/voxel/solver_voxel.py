@@ -52,7 +52,6 @@ from .kernels import (
     spray_backtrack_kernel,
     spray_density_kernel,
     spray_diffusion_kernel,
-    spray_distribution_env_first_kernel,
     spray_distribution_kernel,
     spray_neighbours_kernel,
     spray_rebound_kernel,
@@ -134,7 +133,6 @@ class SolverVoxel(SolverBase):
         generate_box: bool = False,
         rebound: bool = False,
         redistribution: bool = True,
-        deposit_env_first: bool = False,
         use_bounding_boxes: bool = True,
         collect_timings: bool = False,
         record_generated_mass: bool = False,
@@ -157,15 +155,6 @@ class SolverVoxel(SolverBase):
         # rays. With it disabled the droplet masses stay at their generated (incident)
         # values until rebound/deposit, which e.g. measurement setups rely on.
         self.redistribution = redistribution
-        # launch the deposition with the environment index as the first thread
-        # dimension instead of the droplet index (evaluation of race behaviour)
-        self.deposit_env_first = deposit_env_first
-        if deposit_env_first:
-            self.deposit_kernel = spray_distribution_env_first_kernel
-            self.deposit_dim = (self.model.voxel_wet.shape[0], k)
-        else:
-            self.deposit_kernel = spray_distribution_kernel
-            self.deposit_dim = (k, self.model.voxel_wet.shape[0])
         # with bounding boxes disabled, the spray/global boxes are overwritten with the
         # full grid every step, so solidify/adhesion/drop-down scan the whole grid
         self.use_bounding_boxes = use_bounding_boxes
@@ -295,6 +284,47 @@ class SolverVoxel(SolverBase):
                 outputs=[self.adhesion_cond],
             )
             wp.launch(reset_bbox_kernel, dim=(self.shape[0],), outputs=[self.spray_bbox])
+            # advance the robot before spraying so the deposit originates from the
+            # freshly commanded TCP pose instead of lagging one step behind the action
+            wp.launch(
+                update_body_positions_kernel,
+                dim=state_in.body_q.shape,
+                inputs=[state_in.body_q],
+                outputs=[state_out.body_q],
+            )
+            if self.update_joints_and_bodies:
+                with wp.ScopedTimer(
+                    "robot position update",
+                    active=self.active,
+                    synchronize=self.synchronize,
+                    print=self.print_timings,
+                    dict=self.timing_dict,
+                ):
+                    wp.launch(
+                        update_robot_position_kernel,
+                        dim=state_in.joint_q.shape,
+                        inputs=[
+                            state_in.joint_q,
+                            state_in.joint_qd,
+                            state_in.joint_q.shape[0] // self.model.num_worlds,
+                            self.model.joint_velocity_limit,
+                            control.joint_target_pos,
+                            control.joint_target_vel,
+                            dt,
+                        ],
+                        outputs=[
+                            state_out.joint_q,
+                            state_out.joint_qd,
+                        ],
+                    )
+                with wp.ScopedTimer(
+                    "newton fk",
+                    active=self.active,
+                    synchronize=self.synchronize,
+                    print=self.print_timings,
+                    dict=self.timing_dict,
+                ):
+                    newton.eval_fk(self.model, state_out.joint_q, state_out.joint_qd, state_out)
             with wp.ScopedTimer(
                 "spraying",
                 active=self.active,
@@ -302,7 +332,7 @@ class SolverVoxel(SolverBase):
                 print=self.print_timings,
                 dict=self.timing_dict,
             ):
-                self.deposit(wp.clone(state_in.body_q[self.ee_body_indices]), self.model.voxel_pos)
+                self.deposit(wp.clone(state_out.body_q[self.ee_body_indices]), self.model.voxel_pos)
             with wp.ScopedTimer(
                 "update global bbox",
                 active=self.active,
@@ -348,51 +378,13 @@ class SolverVoxel(SolverBase):
                         self.model.voxel_wet,
                         self.model.voxel_dry,
                         self.model.voxel_distance,
+                        self.global_bbox,
                         self.shape[3] - 2,
                         self.i,
                         self.drip_vel,
                     ],
                 )
             self.update_rewards(rewards)
-            wp.launch(
-                update_body_positions_kernel,
-                dim=state_in.body_q.shape,
-                inputs=[state_in.body_q],
-                outputs=[state_out.body_q],
-            )
-            if self.update_joints_and_bodies:
-                with wp.ScopedTimer(
-                    "robot position update",
-                    active=self.active,
-                    synchronize=self.synchronize,
-                    print=self.print_timings,
-                    dict=self.timing_dict,
-                ):
-                    wp.launch(
-                        update_robot_position_kernel,
-                        dim=state_in.joint_q.shape,
-                        inputs=[
-                            state_in.joint_q,
-                            state_in.joint_qd,
-                            state_in.joint_q.shape[0] // self.model.num_worlds,
-                            self.model.joint_velocity_limit,
-                            control.joint_target_pos,
-                            control.joint_target_vel,
-                            dt,
-                        ],
-                        outputs=[
-                            state_out.joint_q,
-                            state_out.joint_qd,
-                        ],
-                    )
-                with wp.ScopedTimer(
-                    "newton fk",
-                    active=self.active,
-                    synchronize=self.synchronize,
-                    print=self.print_timings,
-                    dict=self.timing_dict,
-                ):
-                    newton.eval_fk(self.model, state_out.joint_q, state_out.joint_qd, state_out)
         return state_out
 
     @override
@@ -656,8 +648,8 @@ class SolverVoxel(SolverBase):
         ):
             wp.launch(
                 initialize_load_kernel,
-                dim=self.shape,
-                inputs=[self.model.voxel_wet, self.model.voxel_dry, self.model.voxel_load],
+                dim=(self.shape[0], self.shape[1], self.shape[2]),
+                inputs=[self.model.voxel_wet, self.model.voxel_dry, self.spray_bbox, self.model.voxel_load],
             )
         with wp.ScopedTimer(
             "capacity propagation",
@@ -796,6 +788,7 @@ class SolverVoxel(SolverBase):
                 self.model.voxel_distance,
                 self.model.voxel_load,
                 self.spray_bbox,
+                self.global_bbox,
             ],
             outputs=[rewards.adhesion_failure_amount],
         )
@@ -988,7 +981,14 @@ class SolverVoxel(SolverBase):
                 ],
                 outputs=[self.ray_indices],
             )
-            if self.redistribution:
+        if self.redistribution:
+            with wp.ScopedTimer(
+                "spray respreading",
+                active=self.active,
+                synchronize=self.synchronize,
+                print=self.print_timings,
+                dict=self.timing_dict,
+            ):
                 self.avg_ray_index.zero_()
                 wp.launch(kernel=sum_kernel, dim=(self.shape[0], self.k), inputs=[self.ray_indices, self.avg_ray_index])
                 wp.launch(
@@ -1010,6 +1010,13 @@ class SolverVoxel(SolverBase):
                     ],
                     outputs=[],
                 )
+        with wp.ScopedTimer(
+            "spray backtrack",
+            active=self.active,
+            synchronize=self.synchronize,
+            print=self.print_timings,
+            dict=self.timing_dict,
+        ):
             wp.launch(
                 spray_backtrack_kernel,
                 dim=(self.shape[0], self.k, self.backtrack_count),
@@ -1180,8 +1187,8 @@ class SolverVoxel(SolverBase):
                     dict=self.timing_dict,
                 ):
                     wp.launch(
-                        self.deposit_kernel,
-                        dim=self.deposit_dim,
+                        spray_distribution_kernel,
+                        dim=(self.shape[0], self.k),
                         inputs=[
                             self.model.voxel_wet,
                             self.model.voxel_dry,
@@ -1217,8 +1224,8 @@ class SolverVoxel(SolverBase):
                     outputs=[self.spray_neighbours, self.density],
                 )
                 wp.launch(
-                    self.deposit_kernel,
-                    dim=self.deposit_dim,
+                    spray_distribution_kernel,
+                    dim=(self.shape[0], self.k),
                     inputs=[
                         self.model.voxel_wet,
                         self.model.voxel_dry,

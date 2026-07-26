@@ -22,10 +22,8 @@ Per spray event the ledger
 must close; any residual is mass silently created or destroyed by write races between
 concurrently depositing droplet threads (lost ``saturating_add`` updates and stale
 capacity reads on shared voxels). This example measures that residual, relative to the
-sprayed mass, as a function of the droplet count K -- at constant total mass flux, so
-only the parallelism changes -- and for both deposition thread-launch orders
-(droplet-first, the default, vs. environment-first via the solver's
-``deposit_env_first`` flag).
+sprayed mass, as a function of the droplet count $N_d$ -- at constant total mass flux,
+so only the degree of parallelism changes.
 
 Dripping, adhesion checks and in-flight redistribution are disabled so that the
 deposition pipeline (including the rebound pass) is the only mass-moving mechanism;
@@ -58,10 +56,10 @@ NOZZLE_OPENING_ANGLE = 0.157  # rad, solver default
 NUM_WORLDS = 64
 EVENTS_PER_CONFIG = 200
 
-# droplet-count sweep; the per-droplet mass scales as 1/K so the total sprayed mass
+# droplet-count sweep; the per-droplet mass scales as 1/N_d so the total sprayed mass
 # per event stays constant and only the degree of parallelism changes
-K_SWEEP = [75, 150, 300, 600, 1200]
-BASE_K = 300
+N_D_SWEEP = [75, 150, 300, 600, 1200]
+BASE_N_D = 300
 BASE_DROPLET_MASS = 1.0 / 6.0  # solver default, aggressive deposition
 
 
@@ -78,10 +76,10 @@ class Example:
 
         np.random.seed(6)  # noqa: NPY002 -- the solver draws its speed distributions from legacy np.random
 
-        # one configuration per frame: K sweep x launch order
-        self.configs = [(k, env_first) for env_first in (True, False) for k in K_SWEEP]
+        # one configuration per frame: the N_d sweep
+        self.configs = list(N_D_SWEEP)
         self.total_steps = len(self.configs)
-        # rows of (k, env_first, mean_rel_error, std_rel_error, max_abs_rel_error)
+        # rows of (n_d, mean_rel_error, std_rel_error, max_abs_rel_error)
         self.results = []
 
         # placeholder model so the viewer has something to show; each config builds its own
@@ -118,19 +116,19 @@ class Example:
         dry = model.voxel_dry.numpy().sum(axis=(1, 2, 3), dtype=np.float64)
         return (wet + dry) / 255.0
 
-    def run_config(self, k: int, env_first: bool) -> tuple[float, float, float]:
+    def run_config(self, n_d: int) -> tuple[float, float, float]:
         model = self._build_model()
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
         rewards = newton.VoxelRewards((NUM_WORLDS, GRID_X - 2, GRID_Y - 2, GRID_Z - 2), 16, self.device)
 
-        droplet_mass = BASE_DROPLET_MASS * BASE_K / k
+        droplet_mass = BASE_DROPLET_MASS * BASE_N_D / n_d
         solver = newton.solvers.SolverVoxel(
             model,
             tcp_body_name="nozzle",
             h=VOXEL_SIZE,
-            k=k,
+            k=n_d,
             droplet_mass=droplet_mass,
             nozzle_opening_angle=NOZZLE_OPENING_ANGLE,
             rebound=True,  # exercise the (also parallel) rebound deposit
@@ -139,7 +137,6 @@ class Example:
             drip_vel=-1,
             adhesion_check_freq=-1,
             redistribution=True,
-            deposit_env_first=env_first,
             # exact per-event sprayed mass, read back instead of re-deriving the fit
             record_generated_mass=True,
             backtrack_count=5,
@@ -168,11 +165,10 @@ class Example:
                 self.report()
             return
 
-        k, env_first = self.configs[self.sim_step]
-        mean_err, std_err, max_err = self.run_config(k, env_first)
-        self.results.append((k, env_first, mean_err, std_err, max_err))
-        order = "env-first" if env_first else "droplet-first"
-        print(f"K = {k:5d} ({order:>13}): rel. error {mean_err:+.3e} +- {std_err:.3e}, max |error| {max_err:.3e}")
+        n_d = self.configs[self.sim_step]
+        mean_err, std_err, max_err = self.run_config(n_d)
+        self.results.append((n_d, mean_err, std_err, max_err))
+        print(f"N_d = {n_d:5d}: rel. error {mean_err:+.3e} +- {std_err:.3e}, max |error| {max_err:.3e}")
 
         self.sim_time += self.frame_dt
         self.sim_step += 1
@@ -185,28 +181,24 @@ class Example:
         print("\n=== Mass conservation under parallel deposition ===")
         print(
             f"worlds: {NUM_WORLDS}, events per configuration: {EVENTS_PER_CONFIG}, "
-            f"constant sprayed mass per event ({BASE_DROPLET_MASS * BASE_K:.1f} voxel-mass units per world), "
+            f"constant sprayed mass per event ({BASE_DROPLET_MASS * BASE_N_D:.1f} voxel-mass units per world), "
             f"grid {GRID_X}x{GRID_Y}x{GRID_Z} at {VOXEL_SIZE * 1000:.0f} mm"
         )
         print("relative mass error = (sprayed - deposited - undeposited primary - undeposited rebound) / sprayed")
-        print(f"\n{'K':>6} {'launch order':>14} {'mean rel error':>15} {'std':>10} {'max |error|':>12}")
-        for k, env_first, mean_err, std_err, max_err in self.results:
-            order = "env-first" if env_first else "droplet-first"
-            print(f"{k:6d} {order:>14} {mean_err:15.3e} {std_err:10.3e} {max_err:12.3e}")
+        print(f"\n{'N_d':>6} {'mean rel error':>15} {'std':>10} {'max |error|':>12}")
+        for n_d, mean_err, std_err, max_err in self.results:
+            print(f"{n_d:6d} {mean_err:15.3e} {std_err:10.3e} {max_err:12.3e}")
 
-        by_order = {
-            env_first: [(k, m, s, x) for k, e, m, s, x in self.results if e == env_first] for env_first in (False, True)
-        }
         self.metrics = {
-            "max_abs_error": max(abs(m) for _, _, m, _, _ in self.results),
-            "worst_event_error": max(x for _, _, _, _, x in self.results),
+            "max_abs_error": max(abs(m) for _, m, _, _ in self.results),
+            "worst_event_error": max(x for _, _, _, x in self.results),
         }
 
-        self.save_plot(by_order)
+        self.save_plot(self.results)
         print(f"\nlargest mean |relative error| across configurations: {self.metrics['max_abs_error']:.3e}")
         print(f"largest single-event |relative error|: {self.metrics['worst_event_error']:.3e}")
 
-    def save_plot(self, by_order: dict):
+    def save_plot(self, results: list):
         try:
             import matplotlib  # noqa: PLC0415
 
@@ -218,30 +210,24 @@ class Example:
 
         _plot_style.setup(plt)
         fig, ax = plt.subplots(figsize=(4.4, 3.0))
-        markers = {False: "o", True: "s"}
-        labels = {False: "droplet-first", True: "environment-first"}
-        for env_first, rows in by_order.items():
-            ks = np.array([r[0] for r in rows], dtype=float)
-            means = np.array([abs(r[1]) for r in rows])
-            stds = np.array([r[2] for r in rows])
-            color = _plot_style.SERIES[1 if env_first else 0]
-            ax.errorbar(
-                ks,
-                means,
-                yerr=stds,
-                marker=markers[env_first],
-                color=color,
-                label=labels[env_first],
-                capsize=2.0,
-                elinewidth=0.8,
-            )
+        n_ds = np.array([r[0] for r in results], dtype=float)
+        means = np.array([abs(r[1]) for r in results])
+        stds = np.array([r[2] for r in results])
+        ax.errorbar(
+            n_ds,
+            means,
+            yerr=stds,
+            marker="o",
+            color=_plot_style.SERIES[0],
+            capsize=2.0,
+            elinewidth=0.8,
+        )
         ax.set_xscale("log")
         ax.set_yscale("log")
-        ax.set_xticks(K_SWEEP, labels=[str(k) for k in K_SWEEP])
-        ax.set_xlabel("droplets per spray event $K$")
+        ax.set_xticks(N_D_SWEEP, labels=[str(n_d) for n_d in N_D_SWEEP])
+        ax.set_xlabel("droplets per spray event $N_d$")
         ax.set_ylabel("relative mass error $|m_{\\mathrm{sprayed}} - m_{\\mathrm{deposited}}| / m_{\\mathrm{sprayed}}$")
         ax.set_title("Mass conservation of the parallel deposition")
-        ax.legend()
         fig.savefig("voxel_mass_conservation.pdf")
         plt.close(fig)
         print("saved figure: voxel_mass_conservation.pdf")
@@ -253,7 +239,7 @@ class Example:
         # deliberately crowded configuration (short stand-off, full flux); the ledger
         # must still close to within ~10 %, and losses (not creation) must dominate
         assert self.metrics["max_abs_error"] < 0.1, "parallel deposition mass error implausibly large"
-        assert all(m > -0.01 for _, _, m, _, _ in self.results), "parallel deposition creates mass"
+        assert all(m > -0.01 for _, m, _, _ in self.results), "parallel deposition creates mass"
         assert len(self.results) == self.total_steps, "not all configurations were executed"
 
     def render(self):
@@ -264,7 +250,7 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.set_defaults(num_frames=len(K_SWEEP) * 2)
+    parser.set_defaults(num_frames=len(N_D_SWEEP))
 
     viewer, args = newton.examples.init(parser)
 
