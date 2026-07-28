@@ -1411,8 +1411,8 @@ def update_robot_position_kernel(
     i = wp.tid()
     v_target = (j_target[i] - j[i]) / dt
     a_target = (v_target - jq[i]) / dt
-    a_next = wp.clamp(a_target, -1.0, 1.0)
-    v_next = wp.clamp(jq[i] + a_next * dt, -10.0, 10.0)
+    a_next = wp.clamp(a_target, -20.0, 20.0)
+    v_next = wp.clamp(jq[i] + a_next * dt, -200.0, 200.0)
     out_j[i] = j[i] + v_next * dt
     out_jq[i] = v_next
 
