@@ -203,7 +203,9 @@ class Example:
             import matplotlib  # noqa: PLC0415
 
             matplotlib.use("Agg")
+            import matplotlib.markers  # noqa: PLC0415
             import matplotlib.pyplot as plt  # noqa: PLC0415
+            from matplotlib import ticker  # noqa: PLC0415
         except ImportError:
             print("matplotlib not available, skipping the figure")
             return
@@ -213,18 +215,55 @@ class Example:
         n_ds = np.array([r[0] for r in results], dtype=float)
         means = np.array([abs(r[1]) for r in results])
         stds = np.array([r[2] for r in results])
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+
+        # the +-std interval crosses zero for most configurations, which a log axis
+        # cannot show; clamp those lower whiskers to the axis floor and mark them
+        # with a caret to signal that they continue below
+        ymin = means.min() / 3.0
+        ymax = (means + stds).max() * 1.5
+        clipped = means - stds <= ymin
+        lower = np.where(clipped, means - ymin, stds)
         ax.errorbar(
             n_ds,
             means,
-            yerr=stds,
+            yerr=[lower, stds],
             marker="o",
             color=_plot_style.SERIES[0],
             capsize=2.0,
             elinewidth=0.8,
         )
-        ax.set_xscale("log")
-        ax.set_yscale("log")
+        ax.plot(
+            n_ds[clipped],
+            np.full(int(clipped.sum()), ymin),
+            linestyle="none",
+            marker=matplotlib.markers.CARETDOWNBASE,
+            markersize=4.0,
+            color=_plot_style.SERIES[0],
+            clip_on=False,
+        )
+        ax.set_xlim(n_ds.min() / 1.4, n_ds.max() * 1.4)
+        ax.set_ylim(ymin, ymax)
+
+        # ticks at 1-2-5 per decade; the default log formatter labels only full
+        # decades, of which this axis spans barely one
+        decades = np.arange(np.floor(np.log10(ymin)), np.ceil(np.log10(ymax)) + 1)
+        yticks = np.array([s * 10.0**e for e in decades for s in (1.0, 2.0, 5.0)])
+        yticks = yticks[(yticks >= ymin) & (yticks <= ymax)]
+
+        def _log_label(y, _pos=None):
+            e = int(np.floor(np.log10(y) + 1e-9))
+            m = y / 10.0**e
+            return f"$10^{{{e}}}$" if np.isclose(m, 1.0) else f"${m:g} \\times 10^{{{e}}}$"
+
+        ax.set_yticks(yticks)
+        ax.yaxis.set_major_formatter(ticker.FuncFormatter(_log_label))
+        ax.yaxis.set_minor_locator(ticker.LogLocator(base=10, subs=(3.0, 4.0, 6.0, 7.0, 8.0, 9.0)))
+        ax.yaxis.set_minor_formatter(ticker.NullFormatter())
+
         ax.set_xticks(N_D_SWEEP, labels=[str(n_d) for n_d in N_D_SWEEP])
+        ax.xaxis.set_minor_locator(ticker.NullLocator())
         ax.set_xlabel("droplets per spray event $N_d$")
         ax.set_ylabel("relative mass error $|m_{\\mathrm{sprayed}} - m_{\\mathrm{deposited}}| / m_{\\mathrm{sprayed}}$")
         ax.set_title("Mass conservation of the parallel deposition")

@@ -50,10 +50,15 @@ class VoxelRewards:
                 )
 
     def step(self):
-        self.prev_distance = wp.clone(self.distance)
-        self.prev_distance_without_air_gap = wp.clone(self.distance_without_air_gap)
-        self.prev_air_gap = wp.clone(self.air_gap)
-        self.prev_distance_occluded = wp.clone(self.distance_occluded)
+        # In-place copies, NOT `wp.clone` + rebind: the captured CUDA graph holds the original
+        # buffer pointers (e.g. `prev_distance_occluded` is read by spray_reward_kernel inside the
+        # graph). Rebinding to a fresh allocation is a use-after-free for the graph — the recycled
+        # memory ends up aliasing other per-step clones, which silently disabled the occlusion
+        # carry-forward (the occluded map read last step's clean depth instead of last-seen values).
+        wp.copy(self.prev_distance, self.distance)
+        wp.copy(self.prev_distance_without_air_gap, self.distance_without_air_gap)
+        wp.copy(self.prev_air_gap, self.air_gap)
+        wp.copy(self.prev_distance_occluded, self.distance_occluded)
 
         self.distance.zero_()
         self.distance_occluded.zero_()
